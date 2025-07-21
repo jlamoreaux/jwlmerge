@@ -89,6 +89,9 @@ export function IntelligentMergeInterface({
           },
         });
 
+        // Automatically download the file
+        JWLMerger.downloadFile(result.blob, result.fileName);
+
         onMergeComplete?.(result);
       } else {
         // Handle merge failure

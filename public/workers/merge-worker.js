@@ -169,7 +169,8 @@ async function processMerge(files, mergeConfig) {
     const mergedBlob = await mergedZip.generateAsync({ 
       type: 'blob',
       compression: 'DEFLATE',
-      compressionOptions: { level: 6 }
+      compressionOptions: { level: 6 },
+      mimeType: 'application/octet-stream'
     });
     
     postMessage({ type: 'progress', message: 'Complete!', progress: 100 });

@@ -10,7 +10,6 @@ import { MergeConfigurationPanel } from '@/components/merge/merge-configuration-
 import { PrivacyStatement } from '@/components/privacy-statement';
 import { Button } from '@/components/ui/button';
 import { FileUploadZone } from '@/components/upload/file-upload-zone';
-import { JWLMerger } from '@/lib/merge/merge-logic';
 import { DEFAULT_JWL_DATA_TYPES } from '@/lib/types/file-management';
 import { generateUUID } from '@/lib/utils/uuid';
 
@@ -98,40 +97,6 @@ export default function Home() {
     );
   }, []);
 
-  const handleStartMerge = useCallback(() => {
-    const selectedFiles = managedFiles.filter(file => file.isSelected);
-
-    if (selectedFiles.length < 2) {
-      console.error('Please select at least 2 files to merge');
-      return;
-    }
-
-    void (async () => {
-      try {
-        const result = await JWLMerger.mergeFiles(selectedFiles, {
-          useServerSide: false, // Always use client-side
-          onProgress: (status) => {
-            console.warn('Merge progress:', status);
-            // TODO: Show progress in UI
-          },
-        });
-
-        if (result.success) {
-          if (result.downloadUrl && result.fileName) {
-            JWLMerger.downloadFile(result.downloadUrl, result.fileName);
-          } else if (result.blob && result.fileName) {
-            JWLMerger.downloadFile(result.blob, result.fileName);
-          }
-          setIsMergePanelOpen(false);
-        } else {
-          console.error(`Merge failed: ${result.error || 'Unknown error'}`);
-        }
-      } catch (error) {
-        console.error('Merge error:', error);
-      }
-    })();
-  }, [managedFiles]);
-
   return (
     <main className="min-h-screen">
       {/* Hero Section */}
@@ -192,7 +157,6 @@ export default function Home() {
         onGlobalDataTypeToggle={handleGlobalDataTypeToggle}
         onSelectAll={handleSelectAllDataTypes}
         onDeselectAll={handleDeselectAllDataTypes}
-        onStartMerge={handleStartMerge}
       />
     </main>
   );

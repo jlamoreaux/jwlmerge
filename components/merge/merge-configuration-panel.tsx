@@ -4,7 +4,7 @@ import { X, Download, Settings2, Lock } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 import { GlobalDataTypeControls } from './global-data-type-controls';
-import { MergeActionButton } from './merge-action-button';
+import { IntelligentMergeInterface } from './intelligent-merge-interface';
 
 import type { ManagedFile } from '@/lib/types/file-management';
 
@@ -19,7 +19,6 @@ interface MergeConfigurationPanelProps {
   onGlobalDataTypeToggle: (dataTypeId: string, enabled: boolean) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
-  onStartMerge: () => void;
   className?: string;
 }
 
@@ -30,7 +29,6 @@ export function MergeConfigurationPanel({
   onGlobalDataTypeToggle,
   onSelectAll,
   onDeselectAll,
-  onStartMerge,
   className,
 }: MergeConfigurationPanelProps) {
   const [isMobile, setIsMobile] = useState(false);
@@ -184,13 +182,17 @@ export function MergeConfigurationPanel({
             )}
           </CardContent>
 
-          {/* Sticky Action Button */}
+          {/* Sticky Merge Interface */}
           {hasValidFiles && (
             <div className="border-t p-4">
-              <MergeActionButton
+              <IntelligentMergeInterface
                 managedFiles={selectedFiles}
-                onStartMerge={() => onStartMerge()}
-                disabled={!hasValidFiles}
+                onMergeComplete={() => {
+                  onClose();
+                }}
+                onError={(error) => {
+                  console.error('Merge error:', error);
+                }}
               />
             </div>
           )}
