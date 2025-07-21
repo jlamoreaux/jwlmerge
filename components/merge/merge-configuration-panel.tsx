@@ -147,9 +147,9 @@ export function MergeConfigurationPanel({
                 {/* Processing Mode */}
                 <div className="space-y-4 border-t pt-6">
                   <h3 className="text-sm font-medium">Processing Mode</h3>
-                  
+
                   <div className="space-y-3">
-                    <div 
+                    <div
                       className={cn(
                         'rounded-lg border p-3 cursor-pointer transition-all',
                         !useServerSide && 'border-green-200 bg-green-50'
@@ -171,7 +171,7 @@ export function MergeConfigurationPanel({
                       </div>
                     </div>
 
-                    <div 
+                    <div
                       className={cn(
                         'rounded-lg border p-3 cursor-pointer transition-all',
                         useServerSide && 'border-blue-200 bg-blue-50'

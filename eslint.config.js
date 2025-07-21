@@ -48,6 +48,12 @@ export default [
         console: 'readonly',
         globalThis: 'readonly',
         URL: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
       },
     },
     settings: {

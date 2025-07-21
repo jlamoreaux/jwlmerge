@@ -1,4 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+
+import type { NextRequest } from 'next/server';
 
 import { supabase } from '@/lib/supabase/client';
 
@@ -33,8 +35,8 @@ export async function GET(
     // Check if merge is completed
     if (mergeRecord.status !== 'completed' || !mergeRecord.result_url) {
       return NextResponse.json(
-        { 
-          error: 'Merge not completed', 
+        {
+          error: 'Merge not completed',
           status: mergeRecord.status,
           message: mergeRecord.error_message || 'Merge is still processing'
         },

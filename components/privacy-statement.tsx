@@ -15,7 +15,7 @@ export function PrivacyStatement() {
 
         <div className="mb-6 rounded-lg bg-blue-50 p-4 border border-blue-200">
           <p className="text-sm text-blue-800">
-            <strong>You&apos;re in control:</strong> Choose between client-side processing (maximum privacy) 
+            <strong>You&apos;re in control:</strong> Choose between client-side processing (maximum privacy)
             or server-side processing (faster performance). Both options respect your privacy differently.
           </p>
         </div>

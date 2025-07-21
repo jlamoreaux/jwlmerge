@@ -1,10 +1,11 @@
 import { put } from '@vercel/blob';
 import JSZip from 'jszip';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+
+import type { CreateMergeRequest, MergeResponse, MergeConfig } from '@/lib/types/database';
+import type { NextRequest } from 'next/server';
 
 import { supabase } from '@/lib/supabase/client';
-
-import type { CreateMergeRequest, MergeResponse } from '@/lib/types/database';
 
 export async function POST(request: NextRequest): Promise<NextResponse<MergeResponse>> {
   const startTime = Date.now();
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<MergeResp
 
     try {
       // Download and process files
-      const fileBuffers: Array<{ buffer: ArrayBuffer; config: any }> = [];
+      const fileBuffers: Array<{ buffer: ArrayBuffer; config: MergeConfig['files'][0] | undefined }> = [];
       let totalSize = 0;
 
       for (const fileUrl of file_urls) {
@@ -50,10 +51,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<MergeResp
         if (!response.ok) {
           throw new Error(`Failed to download file: ${fileUrl}`);
         }
-        
+
         const buffer = await response.arrayBuffer();
         totalSize += buffer.byteLength;
-        
+
         // Find corresponding file config
         const fileConfig = merge_config.files.find(f => f.url === fileUrl);
         fileBuffers.push({ buffer, config: fileConfig });
@@ -83,7 +84,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<MergeResp
 
       // Generate merged file
       const mergedBuffer = await mergedZip.generateAsync({ type: 'arraybuffer' });
-      
+
       // Upload result to Vercel Blob Storage
       const resultFileName = `results/merged-${mergeRecord.id}-${Date.now()}.jwlibrary`;
       const resultBlob = await put(resultFileName, mergedBuffer, {
@@ -163,9 +164,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<MergeResp
   } catch (error) {
     console.error('Merge error:', error);
     return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Merge processing failed' 
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Merge processing failed'
       },
       { status: 500 }
     );

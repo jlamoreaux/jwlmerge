@@ -1,7 +1,8 @@
 import { put } from '@vercel/blob';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 import type { UploadResponse } from '@/lib/types/database';
+import type { NextRequest } from 'next/server';
 
 export async function POST(request: NextRequest): Promise<NextResponse<UploadResponse>> {
   try {

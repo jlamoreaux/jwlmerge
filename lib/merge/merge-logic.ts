@@ -25,7 +25,7 @@ export class JWLMerger {
    * Merge multiple JWL files into a single file
    */
   static async mergeFiles(
-    managedFiles: ManagedFile[], 
+    managedFiles: ManagedFile[],
     options: MergeOptions = {}
   ): Promise<MergeResult> {
     const { useServerSide = true } = options;
@@ -169,7 +169,7 @@ export class JWLMerger {
    * Download a file (blob or URL)
    */
   static downloadFile(source: Blob | string, fileName: string): void {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') {return;}
 
     if (typeof source === 'string') {
       // Download from URL

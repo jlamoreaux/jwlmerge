@@ -40,7 +40,7 @@ export function getDownloadUrl(mergeId: string): string {
 /**
  * Check API health status
  */
-export async function checkHealth(): Promise<any> {
+export async function checkHealth(): Promise<{ success: boolean; database?: boolean; storage?: boolean; error?: string }> {
   const response = await fetch('/api/health');
   return response.json();
 }
@@ -49,14 +49,14 @@ export async function checkHealth(): Promise<any> {
  * Poll merge status until completion
  */
 export async function pollMergeStatus(
-  mergeId: string, 
+  mergeId: string,
   onUpdate?: (status: string) => void,
   maxAttempts: number = 30,
   intervalMs: number = 2000
 ): Promise<string> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      const response = await fetch(getDownloadUrl(mergeId), { 
+      const response = await fetch(getDownloadUrl(mergeId), {
         method: 'HEAD' // Use HEAD to check status without downloading
       });
 

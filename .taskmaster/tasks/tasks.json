@@ -312,7 +312,7 @@
         "dependencies": [
           1
         ],
-        "status": "in-progress",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -320,7 +320,7 @@
             "description": "Define and create the database table structure for storing user information, including credentials and profile data.",
             "dependencies": [],
             "details": "Create a migration file for a 'users' table. The table should include columns for 'id' (primary key), 'email' (unique), 'username' (unique), 'hashed_password' (string), 'created_at', and 'updated_at'. Ensure appropriate data types and constraints are used.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Run the database migration to confirm the 'users' table is created with the correct schema. Write a test to ensure the migration can be applied and reverted successfully."
           },
           {
@@ -329,7 +329,7 @@
             "description": "Develop a reusable service to securely hash and verify user passwords.",
             "dependencies": [],
             "details": "Create a module with two functions: `hash_password(password)` and `verify_password(plain_password, hashed_password)`. Use a strong, salted hashing algorithm like Argon2 or bcrypt. Do not use outdated algorithms like MD5 or SHA1.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write unit tests for the hashing service. Verify that `hash_password` produces a valid hash. Verify that `verify_password` returns true for a correct password and false for an incorrect one. Test edge cases like empty strings."
           },
           {
@@ -341,7 +341,7 @@
               2
             ],
             "details": "Implement a `POST /api/register` endpoint. It should accept 'email', 'username', and 'password'. Validate the input for uniqueness (email, username) and password strength. Use the Password Hashing Service to hash the password before storing the new user in the database.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write integration tests. Test successful registration (201 Created). Test failure cases like duplicate email/username (409 Conflict), and invalid input (400 Bad Request). Verify that the password stored in the database is correctly hashed."
           },
           {
@@ -353,7 +353,7 @@
               2
             ],
             "details": "Implement a `POST /api/login` endpoint. It should accept user credentials. Fetch the user from the database and use the Password Hashing Service to verify the password. On success, generate a signed JSON Web Token (JWT) containing the user's ID and role as claims. Return the JWT in the response.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write integration tests. Test successful login with valid credentials (200 OK with JWT). Test failed login with invalid credentials (401 Unauthorized). Write a test to decode a successfully generated JWT to verify its signature and payload."
           }
         ]
@@ -690,7 +690,7 @@
         "description": "Create a system to automatically recommend client-side or server-side processing based on total file size and device capabilities, allowing user overrides with clear warnings.",
         "details": "This task involves implementing the logic to choose a processing mode before the merge begins. \n1. **File Size Detection:** Upon file selection/deselection (from Task 4 UI), continuously calculate and store the total size of all staged files. \n2. **Device Capability Detection:** On page load, use `navigator.hardwareConcurrency` and `navigator.deviceMemory` to create a device capability score ('low', 'medium', 'high'). This will help determine if client-side processing is feasible. \n3. **Smart Recommendation UI:** When the user initiates the merge (from Task 5), display a modal dialog. This modal will present the recommended processing mode based on a ruleset (e.g., total size > 25MB or low device capability -> recommend server). The modal must clearly explain the 'why' (e.g., 'Large files may crash your browser') and include explicit privacy warnings for server-side processing ('Your data will be temporarily uploaded to our servers'). \n4. **Client-Side Processing Engine:** Implement the client-side merge logic within a Web Worker to avoid freezing the UI. Use `JSZip` to decompress/compress `.jwlibrary` archives and `sql.js` (SQLite via WebAssembly) to perform the database merge operations directly in the browser. \n5. **Unified Progress Indicator:** Develop a UI component that can display detailed progress updates (e.g., 'Unpacking files...', 'Merging Notes...', 'Finalizing archive...') received from either the client-side Web Worker or the server-side polling mechanism (from Task 8). \n6. **Fallback Mechanism:** If the client-side Web Worker fails (e.g., out of memory), the UI must catch the error and present the user with an option to retry the merge using the server-side method.",
         "testStrategy": "1. **Unit Tests:** Verify the device capability scoring function with mocked `navigator` properties. Test the recommendation logic to ensure it returns the correct mode ('client' or 'server') for various file size and capability score inputs. \n2. **Integration Tests:** Test the Web Worker implementation to ensure messages (progress, success, error) are correctly passed to and from the main UI thread. \n3. **E2E Tests:** \n   - **Server Path:** Upload files totaling >25MB. Verify the server-side recommendation modal appears with correct warnings. Confirm the choice and assert that the server-side processing flow (Task 8) is initiated. \n   - **Client Path:** Upload files <10MB. Verify the client-side recommendation is shown. Confirm and check that the client-side progress bar appears and the merge completes successfully for download. \n   - **Override Path:** Upload files >25MB. Explicitly select the non-recommended client-side option in the modal and verify the client-side process begins. \n   - **Fallback Path:** Use a test hook to force the client-side worker to fail. Verify the UI displays an error and correctly offers the option to retry using server-side processing.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           4,
           5
@@ -701,7 +701,7 @@
     ],
     "metadata": {
       "created": "2025-07-21T01:21:49.739Z",
-      "updated": "2025-07-21T02:52:26.234Z",
+      "updated": "2025-07-21T02:54:57.586Z",
       "description": "Tasks for master context"
     }
   }
