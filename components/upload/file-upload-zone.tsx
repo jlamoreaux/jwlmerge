@@ -94,7 +94,7 @@ export function FileUploadZone({
         )
       );
     }
-  }, [onValidatedFiles, onFilesSelected]);
+  }, [onValidatedFiles, onFilesSelected, uploadedFiles]);
 
   const onDrop = useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {

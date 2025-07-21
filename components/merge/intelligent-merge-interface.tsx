@@ -3,7 +3,10 @@
 import { useState, useCallback } from 'react';
 
 import { MergeActionButton } from './merge-action-button';
-import { MergeProgressIndicator, type MergeProgressState } from './merge-progress-indicator';
+import {
+  MergeProgressIndicator,
+  type MergeProgressState,
+} from './merge-progress-indicator';
 
 import type { ManagedFile } from '@/lib/types/file-management';
 
@@ -31,9 +34,10 @@ export function IntelligentMergeInterface({
     progress: 0,
   });
 
-
   const handleStartMerge = useCallback(async () => {
-    if (managedFiles.length === 0) {return;}
+    if (managedFiles.length === 0) {
+      return;
+    }
 
     // Always use client-side processing
 
@@ -99,7 +103,8 @@ export function IntelligentMergeInterface({
         onError?.(result.error || 'Merge failed');
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
 
       setProgressState({
         status: 'error',
@@ -115,7 +120,10 @@ export function IntelligentMergeInterface({
 
   const handleDownload = useCallback(() => {
     if (progressState.result?.blob && progressState.result?.fileName) {
-      JWLMerger.downloadFile(progressState.result.blob, progressState.result.fileName);
+      JWLMerger.downloadFile(
+        progressState.result.blob,
+        progressState.result.fileName
+      );
     }
   }, [progressState.result]);
 
@@ -136,8 +144,11 @@ export function IntelligentMergeInterface({
       {/* Merge Action Button */}
       <MergeActionButton
         managedFiles={managedFiles}
-        onStartMerge={handleStartMerge}
-        disabled={progressState.status === 'preparing' || progressState.status === 'processing'}
+        onStartMerge={() => { void handleStartMerge(); }}
+        disabled={
+          progressState.status === 'preparing' ||
+          progressState.status === 'processing'
+        }
       />
 
       {/* Progress Indicator */}
@@ -156,9 +167,14 @@ export function IntelligentMergeInterface({
 export function testIntelligentMergeSystem(managedFiles: ManagedFile[]) {
   const deviceCapabilities = detectDeviceCapabilities();
   const fileSizeInfo = calculateFileSizes(managedFiles);
-  const orchestratorRecommendation = MergeOrchestrator.getRecommendation(managedFiles);
-  const clientFeasibility = MergeOrchestrator.canProcessClientSide(managedFiles);
-  const clientTimeEstimate = MergeOrchestrator.estimateProcessingTime(managedFiles, 'client');
+  const orchestratorRecommendation =
+    MergeOrchestrator.getRecommendation(managedFiles);
+  const clientFeasibility =
+    MergeOrchestrator.canProcessClientSide(managedFiles);
+  const clientTimeEstimate = MergeOrchestrator.estimateProcessingTime(
+    managedFiles,
+    'client'
+  );
 
   return {
     deviceCapabilities,
