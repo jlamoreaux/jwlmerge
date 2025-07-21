@@ -152,6 +152,15 @@ export function IntelligentMergeInterface({
           progressState.status === 'preparing' ||
           progressState.status === 'processing'
         }
+        isLoading={
+          progressState.status === 'preparing' ||
+          progressState.status === 'processing'
+        }
+        loadingText={
+          progressState.status === 'preparing'
+            ? 'Preparing...'
+            : progressState.message || 'Merging Files...'
+        }
       />
 
       {/* Progress Indicator */}

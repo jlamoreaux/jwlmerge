@@ -12,6 +12,8 @@ interface MergeActionButtonProps {
   managedFiles: ManagedFile[];
   onStartMerge: () => void;
   disabled?: boolean;
+  isLoading?: boolean;
+  loadingText?: string;
   className?: string;
 }
 
@@ -19,18 +21,20 @@ export function MergeActionButton({
   managedFiles,
   onStartMerge,
   disabled = false,
+  isLoading: externalLoading = false,
+  loadingText = 'Merging Files...',
   className,
 }: MergeActionButtonProps) {
-  const [isLoading, setIsLoading] = useState(false);
+  const [internalLoading, setInternalLoading] = useState(false);
 
   const handleMerge = async () => {
-    if (disabled || isLoading) {return;}
+    if (disabled || externalLoading || internalLoading) {return;}
 
-    setIsLoading(true);
+    setInternalLoading(true);
     try {
       onStartMerge();
     } finally {
-      setIsLoading(false);
+      setInternalLoading(false);
     }
   };
 
@@ -64,6 +68,7 @@ export function MergeActionButton({
   };
 
   const validation = getMergeValidation();
+  const isLoading = externalLoading || internalLoading;
   const isDisabled = disabled || !validation.canMerge || isLoading;
 
   return (
@@ -95,7 +100,7 @@ export function MergeActionButton({
         {isLoading ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Merging Files...
+            {loadingText}
           </>
         ) : (
           <>
