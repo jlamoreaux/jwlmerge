@@ -1,20 +1,55 @@
 import JSZip from 'jszip';
 
+// import { startMerge, uploadFile, getDownloadUrl, pollMergeStatus } from '@/lib/api/client';
+
 import type { ManagedFile } from '@/lib/types/file-management';
 import type { JWLMetadata } from '@/lib/validation/jwl-validator';
+// import type { CreateMergeRequest, MergeConfig } from '@/lib/types/database';
 
 export interface MergeResult {
   success: boolean;
   blob?: Blob;
   fileName?: string;
+  downloadUrl?: string;
+  mergeId?: string;
   error?: string;
+}
+
+export interface MergeOptions {
+  useServerSide?: boolean;
+  onProgress?: (status: string) => void;
 }
 
 export class JWLMerger {
   /**
    * Merge multiple JWL files into a single file
    */
-  static async mergeFiles(managedFiles: ManagedFile[]): Promise<MergeResult> {
+  static async mergeFiles(
+    managedFiles: ManagedFile[], 
+    options: MergeOptions = {}
+  ): Promise<MergeResult> {
+    const { useServerSide = true } = options;
+
+    if (useServerSide) {
+      // Server-side processing temporarily disabled due to privacy concerns
+      // return this.mergeFilesServerSide(managedFiles, onProgress);
+      console.warn('Server-side processing not yet fully implemented. Falling back to client-side.');
+      return this.mergeFilesClientSide(managedFiles);
+    } else {
+      return this.mergeFilesClientSide(managedFiles);
+    }
+  }
+
+  /**
+   * Merge files using server-side processing
+   * Currently disabled for privacy reasons - will be implemented in Task 11
+   */
+  // TODO: Implement server-side processing in Task 11
+
+  /**
+   * Merge files using client-side processing (fallback)
+   */
+  private static async mergeFilesClientSide(managedFiles: ManagedFile[]): Promise<MergeResult> {
     try {
       // Validate input
       if (managedFiles.length < 2) {
@@ -131,11 +166,23 @@ export class JWLMerger {
   }
 
   /**
-   * Download a blob as a file
+   * Download a file (blob or URL)
    */
-  static downloadBlob(blob: Blob, fileName: string): void {
-    if (typeof window !== 'undefined') {
-      const url = URL.createObjectURL(blob);
+  static downloadFile(source: Blob | string, fileName: string): void {
+    if (typeof window === 'undefined') return;
+
+    if (typeof source === 'string') {
+      // Download from URL
+      const a = window.document.createElement('a');
+      a.href = source;
+      a.download = fileName;
+      a.target = '_blank';
+      window.document.body.appendChild(a);
+      a.click();
+      window.document.body.removeChild(a);
+    } else {
+      // Download blob
+      const url = URL.createObjectURL(source);
       const a = window.document.createElement('a');
       a.href = url;
       a.download = fileName;
@@ -144,5 +191,12 @@ export class JWLMerger {
       window.document.body.removeChild(a);
       URL.revokeObjectURL(url);
     }
+  }
+
+  /**
+   * @deprecated Use downloadFile instead
+   */
+  static downloadBlob(blob: Blob, fileName: string): void {
+    this.downloadFile(blob, fileName);
   }
 }

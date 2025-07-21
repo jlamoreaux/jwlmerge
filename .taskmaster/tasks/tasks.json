@@ -256,7 +256,7 @@
         "dependencies": [
           4
         ],
-        "status": "in-progress",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -264,7 +264,7 @@
             "description": "Create the necessary database table to store user information, including credentials and profile data. This forms the foundation for all user-related features.",
             "dependencies": [],
             "details": "Define a 'users' table with columns such as 'id' (UUID, primary key), 'email' (unique, indexed), 'password_hash' (string), 'created_at', and 'updated_at'. Use a database migration tool (e.g., Alembic, Flyway) to script the schema changes. Create a corresponding User model in the application's ORM.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write a unit test to verify the User model's constraints (e.g., email format validation). Run the migration script against a test database to ensure it can be applied and reverted successfully."
           },
           {
@@ -275,7 +275,7 @@
               1
             ],
             "details": "The endpoint should accept an email and password. It must validate the input (e.g., valid email format, strong password policy), hash the password using bcrypt, and store the new user in the database. Ensure proper error handling for duplicate emails. On success, return a 201 Created status code.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write integration tests to cover: successful registration, attempting to register with an existing email (expect 409 Conflict), and submitting invalid data (e.g., bad email, weak password; expect 400 Bad Request)."
           },
           {
@@ -286,7 +286,7 @@
               1
             ],
             "details": "The endpoint will receive an email and password. It should find the user by email, verify the provided password against the stored hash using bcrypt. If credentials are valid, generate a signed JWT containing the user ID and an expiration claim. Return the JWT in the response body.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write integration tests for: successful login with correct credentials, failed login with an incorrect password, and a login attempt for a non-existent user. Verify the structure and signature of the returned JWT."
           },
           {
@@ -297,7 +297,7 @@
               3
             ],
             "details": "The middleware should extract the JWT from the 'Authorization: Bearer <token>' header. It must verify the token's signature and check for expiration. If the token is valid, decode the payload to identify the user and attach the user's information to the request context. If the token is invalid, missing, or expired, the middleware must respond with a 401 Unauthorized error.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Create a sample protected endpoint. Write integration tests to verify that: a request with a valid token is allowed, a request with no token is rejected with a 401, a request with an expired token is rejected with a 401, and a request with an invalid signature is rejected with a 401."
           }
         ]
@@ -312,7 +312,7 @@
         "dependencies": [
           1
         ],
-        "status": "pending",
+        "status": "in-progress",
         "subtasks": [
           {
             "id": 1,
@@ -683,11 +683,25 @@
             "testStrategy": "Conduct end-to-end testing using a tool like Cypress or Playwright. Test the full user flow: registration, login, accessing a protected route, and logging out. Verify that the JWT is correctly stored and sent with subsequent requests."
           }
         ]
+      },
+      {
+        "id": 11,
+        "title": "Implement Intelligent Processing Mode Selection (Client vs. Server)",
+        "description": "Create a system to automatically recommend client-side or server-side processing based on total file size and device capabilities, allowing user overrides with clear warnings.",
+        "details": "This task involves implementing the logic to choose a processing mode before the merge begins. \n1. **File Size Detection:** Upon file selection/deselection (from Task 4 UI), continuously calculate and store the total size of all staged files. \n2. **Device Capability Detection:** On page load, use `navigator.hardwareConcurrency` and `navigator.deviceMemory` to create a device capability score ('low', 'medium', 'high'). This will help determine if client-side processing is feasible. \n3. **Smart Recommendation UI:** When the user initiates the merge (from Task 5), display a modal dialog. This modal will present the recommended processing mode based on a ruleset (e.g., total size > 25MB or low device capability -> recommend server). The modal must clearly explain the 'why' (e.g., 'Large files may crash your browser') and include explicit privacy warnings for server-side processing ('Your data will be temporarily uploaded to our servers'). \n4. **Client-Side Processing Engine:** Implement the client-side merge logic within a Web Worker to avoid freezing the UI. Use `JSZip` to decompress/compress `.jwlibrary` archives and `sql.js` (SQLite via WebAssembly) to perform the database merge operations directly in the browser. \n5. **Unified Progress Indicator:** Develop a UI component that can display detailed progress updates (e.g., 'Unpacking files...', 'Merging Notes...', 'Finalizing archive...') received from either the client-side Web Worker or the server-side polling mechanism (from Task 8). \n6. **Fallback Mechanism:** If the client-side Web Worker fails (e.g., out of memory), the UI must catch the error and present the user with an option to retry the merge using the server-side method.",
+        "testStrategy": "1. **Unit Tests:** Verify the device capability scoring function with mocked `navigator` properties. Test the recommendation logic to ensure it returns the correct mode ('client' or 'server') for various file size and capability score inputs. \n2. **Integration Tests:** Test the Web Worker implementation to ensure messages (progress, success, error) are correctly passed to and from the main UI thread. \n3. **E2E Tests:** \n   - **Server Path:** Upload files totaling >25MB. Verify the server-side recommendation modal appears with correct warnings. Confirm the choice and assert that the server-side processing flow (Task 8) is initiated. \n   - **Client Path:** Upload files <10MB. Verify the client-side recommendation is shown. Confirm and check that the client-side progress bar appears and the merge completes successfully for download. \n   - **Override Path:** Upload files >25MB. Explicitly select the non-recommended client-side option in the modal and verify the client-side process begins. \n   - **Fallback Path:** Use a test hook to force the client-side worker to fail. Verify the UI displays an error and correctly offers the option to retry using server-side processing.",
+        "status": "pending",
+        "dependencies": [
+          4,
+          5
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "created": "2025-07-21T01:21:49.739Z",
-      "updated": "2025-07-21T02:25:24.083Z",
+      "updated": "2025-07-21T02:52:26.234Z",
       "description": "Tasks for master context"
     }
   }

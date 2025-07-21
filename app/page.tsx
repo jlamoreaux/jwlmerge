@@ -98,7 +98,7 @@ export default function Home() {
     );
   }, []);
 
-  const handleStartMerge = useCallback(() => {
+  const handleStartMerge = useCallback((useServerSide: boolean) => {
     const selectedFiles = managedFiles.filter(file => file.isSelected);
 
     if (selectedFiles.length < 2) {
@@ -108,10 +108,20 @@ export default function Home() {
 
     void (async () => {
       try {
-        const result = await JWLMerger.mergeFiles(selectedFiles);
+        const result = await JWLMerger.mergeFiles(selectedFiles, {
+          useServerSide,
+          onProgress: (status) => {
+            console.warn('Merge progress:', status);
+            // TODO: Show progress in UI
+          },
+        });
 
-        if (result.success && result.blob && result.fileName) {
-          JWLMerger.downloadBlob(result.blob, result.fileName);
+        if (result.success) {
+          if (result.downloadUrl && result.fileName) {
+            JWLMerger.downloadFile(result.downloadUrl, result.fileName);
+          } else if (result.blob && result.fileName) {
+            JWLMerger.downloadFile(result.blob, result.fileName);
+          }
           setIsMergePanelOpen(false);
         } else {
           console.error(`Merge failed: ${result.error || 'Unknown error'}`);
