@@ -146,17 +146,34 @@ async function processMerge(files, mergeConfig) {
     // Create new JWL file
     const mergedZip = new JSZip();
     
-    // Create merged manifest
+    // Create merged manifest using format from source files
+    const now = new Date();
+    const dateString = now.toISOString().replace('T', ' ').substring(0, 19);
+    const timezoneOffset = -now.getTimezoneOffset();
+    const offsetHours = Math.floor(Math.abs(timezoneOffset) / 60);
+    const offsetMinutes = Math.abs(timezoneOffset) % 60;
+    const offsetSign = timezoneOffset >= 0 ? '+' : '-';
+    const formattedDate = `${dateString}${offsetSign}${String(offsetHours).padStart(2, '0')}${String(offsetMinutes).padStart(2, '0')}`;
+    
+    // Generate a proper hash for the merged database
+    const hashBytes = new Uint8Array(mergedDbData);
+    let hashString = '';
+    for (let i = 0; i < Math.min(hashBytes.length, 1000); i += 100) {
+      hashString += hashBytes[i].toString(16).padStart(2, '0');
+    }
+    const hash = hashString.padEnd(64, '0').substring(0, 64); // Ensure 64 character hash
+    
     const mergedManifest = {
-      name: 'merged-library',
-      creationDate: new Date().toISOString(),
+      name: `merged-library-${now.toISOString().split('T')[0]}.jwlibrary`,
+      creationDate: formattedDate,
       version: 1,
       type: 0,
       userDataBackup: {
-        lastModifiedDate: new Date().toISOString(),
-        deviceName: 'JWL Merge Web - Client Processed',
-        hash: `client-merged-${Date.now()}`,
-        schemaVersion: 13
+        lastModifiedDate: formattedDate,
+        databaseName: 'userData.db',
+        deviceName: 'JWL Merge',
+        hash: hash,
+        schemaVersion: 14
       }
     };
     
