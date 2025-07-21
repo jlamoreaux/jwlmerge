@@ -148,7 +148,7 @@ async function processMerge(files, mergeConfig) {
     
     // Create merged manifest using format from source files
     const now = new Date();
-    const dateString = now.toISOString().replace('T', ' ').substring(0, 19);
+    const dateString = now.toISOString().substring(0, 19); // Keep the T separator
     const timezoneOffset = -now.getTimezoneOffset();
     const offsetHours = Math.floor(Math.abs(timezoneOffset) / 60);
     const offsetMinutes = Math.abs(timezoneOffset) % 60;
@@ -156,7 +156,9 @@ async function processMerge(files, mergeConfig) {
     const formattedDate = `${dateString}${offsetSign}${String(offsetHours).padStart(2, '0')}${String(offsetMinutes).padStart(2, '0')}`;
     
     // Generate SHA-256 hash of the database file
-    const hashBuffer = await crypto.subtle.digest('SHA-256', mergedDbData);
+    // Ensure we're hashing the raw database bytes correctly
+    const dbBuffer = new Uint8Array(mergedDbData);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', dbBuffer);
     const hashArray = new Uint8Array(hashBuffer);
     const hash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
     
