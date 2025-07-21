@@ -155,13 +155,10 @@ async function processMerge(files, mergeConfig) {
     const offsetSign = timezoneOffset >= 0 ? '+' : '-';
     const formattedDate = `${dateString}${offsetSign}${String(offsetHours).padStart(2, '0')}${String(offsetMinutes).padStart(2, '0')}`;
     
-    // Generate a proper hash for the merged database
-    const hashBytes = new Uint8Array(mergedDbData);
-    let hashString = '';
-    for (let i = 0; i < Math.min(hashBytes.length, 1000); i += 100) {
-      hashString += hashBytes[i].toString(16).padStart(2, '0');
-    }
-    const hash = hashString.padEnd(64, '0').substring(0, 64); // Ensure 64 character hash
+    // Generate SHA-256 hash of the database file
+    const hashBuffer = await crypto.subtle.digest('SHA-256', mergedDbData);
+    const hashArray = new Uint8Array(hashBuffer);
+    const hash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
     
     const mergedManifest = {
       name: `merged-library-${now.toISOString().split('T')[0]}.jwlibrary`,
