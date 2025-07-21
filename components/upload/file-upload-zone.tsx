@@ -21,12 +21,14 @@ interface UploadedFile {
 
 interface FileUploadZoneProps {
   onFilesSelected?: (_files: File[]) => void;
+  onValidatedFiles?: (_files: Array<{ file: File; metadata: JWLMetadata }>) => void;
   maxFiles?: number;
   className?: string;
 }
 
 export function FileUploadZone({
   onFilesSelected,
+  onValidatedFiles,
   maxFiles = 10,
   className,
 }: FileUploadZoneProps) {
@@ -57,13 +59,25 @@ export function FileUploadZone({
         )
       );
 
-      // Notify parent of valid files
-      if (result.isValid && onFilesSelected) {
-        const validFiles = uploadedFiles
-          .filter((f) => f.status === 'valid')
-          .map((f) => f.file);
-        validFiles.push(uploadedFile.file);
-        onFilesSelected(validFiles);
+      // Notify parent of valid files with metadata
+      if (result.isValid && result.metadata) {
+        if (onValidatedFiles) {
+          // Get all currently valid files including this one
+          const allValidFiles = uploadedFiles
+            .filter((f) => f.status === 'valid' && f.metadata)
+            .map((f) => ({ file: f.file, metadata: f.metadata! }));
+          
+          allValidFiles.push({ file: uploadedFile.file, metadata: result.metadata });
+          onValidatedFiles(allValidFiles);
+        }
+        
+        if (onFilesSelected) {
+          const validFiles = uploadedFiles
+            .filter((f) => f.status === 'valid')
+            .map((f) => f.file);
+          validFiles.push(uploadedFile.file);
+          onFilesSelected(validFiles);
+        }
       }
     } catch (error) {
       setUploadedFiles((prev) =>
@@ -122,7 +136,25 @@ export function FileUploadZone({
   );
 
   const removeFile = (id: string) => {
-    setUploadedFiles((prev) => prev.filter((f) => f.id !== id));
+    setUploadedFiles((prev) => {
+      const newFiles = prev.filter((f) => f.id !== id);
+      
+      // Update callbacks with remaining valid files
+      const validFiles = newFiles.filter((f) => f.status === 'valid');
+      
+      if (onValidatedFiles) {
+        const validFilesWithMetadata = validFiles
+          .filter((f) => f.metadata)
+          .map((f) => ({ file: f.file, metadata: f.metadata! }));
+        onValidatedFiles(validFilesWithMetadata);
+      }
+      
+      if (onFilesSelected) {
+        onFilesSelected(validFiles.map((f) => f.file));
+      }
+      
+      return newFiles;
+    });
   };
 
   const { getRootProps, getInputProps, isDragActive, isDragReject } =

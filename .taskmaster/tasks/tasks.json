@@ -200,7 +200,7 @@
         "dependencies": [
           3
         ],
-        "status": "pending",
+        "status": "done",
         "subtasks": [
           {
             "id": 1,
@@ -208,7 +208,7 @@
             "description": "Create the necessary database table(s) to store user information, including credentials and profile data.",
             "dependencies": [],
             "details": "Define a 'users' table with columns for id (primary key), username (unique), email (unique), hashed_password, created_at, and updated_at. Use a migration tool (e.g., Flyway, Alembic, Knex.js migrations) to apply the schema to the development and testing databases.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Verify the migration runs successfully against a clean database. Manually inspect the database schema to confirm all columns, types, and constraints are created as specified. Write a test to ensure the migration is idempotent."
           },
           {
@@ -219,7 +219,7 @@
               1
             ],
             "details": "The endpoint should accept a JSON body with username, email, and password. Implement server-side validation for input fields (e.g., password complexity, valid email format). Use a strong hashing algorithm like bcrypt to hash the password before storing it in the database. Return a success message and a 201 status code upon successful registration.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write unit tests for the validation logic. Write integration tests to cover the happy path (successful registration), and error cases like duplicate username/email, invalid input, and database errors."
           },
           {
@@ -230,7 +230,7 @@
               1
             ],
             "details": "The endpoint should accept a username/email and password. Find the user in the database and compare the provided password with the stored hash using bcrypt's compare function. If credentials are valid, generate a JSON Web Token (JWT) containing the user ID and an expiration date. Return the JWT to the client.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Write integration tests for successful login (returns a valid JWT), failed login due to incorrect password, and failed login for a non-existent user. Unit test the JWT generation logic separately."
           },
           {
@@ -241,7 +241,7 @@
               3
             ],
             "details": "The middleware should extract the JWT from the 'Authorization' header (e.g., 'Bearer <token>'). It must validate the token's signature and check its expiration. If valid, decode the payload to identify the user and attach the user information to the request object for use in subsequent handlers. If invalid, it should return a 401 Unauthorized error.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Create a dummy protected endpoint. Write integration tests to verify that a request with a valid token is allowed, a request with an invalid/expired token is rejected with a 401 status, and a request with no token is rejected with a 401 status."
           }
         ]
@@ -687,7 +687,7 @@
     ],
     "metadata": {
       "created": "2025-07-21T01:21:49.739Z",
-      "updated": "2025-07-21T02:07:37.428Z",
+      "updated": "2025-07-21T02:16:42.323Z",
       "description": "Tasks for master context"
     }
   }

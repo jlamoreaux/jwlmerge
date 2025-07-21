@@ -2,14 +2,57 @@
 
 import { PrivacyStatement } from '@/components/privacy-statement';
 import { FileUploadZone } from '@/components/upload/file-upload-zone';
+import { FileManagementGrid } from '@/components/file-management/file-management-grid';
+import type { ManagedFile, JWLDataType } from '@/lib/types/file-management';
+import { DEFAULT_JWL_DATA_TYPES } from '@/lib/types/file-management';
+import type { JWLMetadata } from '@/lib/validation/jwl-validator';
+import { useState, useCallback } from 'react';
 
 export default function Home() {
-  const handleFilesSelected = (files: File[]) => {
-    // TODO: Implement file processing logic
-    if (files.length > 0) {
-      // Files will be processed here
-    }
-  };
+  const [managedFiles, setManagedFiles] = useState<ManagedFile[]>([]);
+
+  const handleValidatedFiles = useCallback((files: Array<{ file: File; metadata: JWLMetadata }>) => {
+    const newManagedFiles = files.map((validatedFile): ManagedFile => ({
+      id: globalThis.crypto.randomUUID(),
+      file: validatedFile.file,
+      metadata: validatedFile.metadata,
+      dataTypes: DEFAULT_JWL_DATA_TYPES.map((dt): JWLDataType => ({
+        ...dt,
+        enabled: true, // Enable all data types by default
+      })),
+      isSelected: true,
+    }));
+
+    setManagedFiles(prev => {
+      // Remove duplicates based on file name and size
+      const existing = prev.filter(existing => 
+        !newManagedFiles.some(newFile => 
+          newFile.file.name === existing.file.name && 
+          newFile.file.size === existing.file.size
+        )
+      );
+      return [...existing, ...newManagedFiles];
+    });
+  }, []);
+
+  const handleDataTypeToggle = useCallback((fileId: string, dataTypeId: string, enabled: boolean) => {
+    setManagedFiles(prev =>
+      prev.map(file =>
+        file.id === fileId
+          ? {
+              ...file,
+              dataTypes: file.dataTypes.map(dt =>
+                dt.id === dataTypeId ? { ...dt, enabled } : dt
+              ),
+            }
+          : file
+      )
+    );
+  }, []);
+
+  const handleRemoveFile = useCallback((fileId: string) => {
+    setManagedFiles(prev => prev.filter(file => file.id !== fileId));
+  }, []);
 
   return (
     <main className="min-h-screen">
@@ -28,9 +71,22 @@ export default function Home() {
       {/* Upload Section */}
       <section className="px-6 pb-12">
         <div className="mx-auto max-w-4xl">
-          <FileUploadZone onFilesSelected={handleFilesSelected} />
+          <FileUploadZone onValidatedFiles={handleValidatedFiles} />
         </div>
       </section>
+
+      {/* File Management Section */}
+      {managedFiles.length > 0 && (
+        <section className="px-6 pb-12">
+          <div className="mx-auto max-w-6xl">
+            <FileManagementGrid
+              managedFiles={managedFiles}
+              onDataTypeToggle={handleDataTypeToggle}
+              onRemoveFile={handleRemoveFile}
+            />
+          </div>
+        </section>
+      )}
 
       {/* Privacy Section - Below the fold */}
       <section className="px-6 pb-20">
