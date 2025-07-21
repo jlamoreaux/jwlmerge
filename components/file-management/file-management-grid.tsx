@@ -10,6 +10,7 @@ interface FileManagementGridProps {
   managedFiles: ManagedFile[];
   onDataTypeToggle: (fileId: string, dataTypeId: string, enabled: boolean) => void;
   onRemoveFile: (fileId: string) => void;
+  onToggleSelection?: (fileId: string, selected: boolean) => void;
   className?: string;
 }
 
@@ -17,6 +18,7 @@ export function FileManagementGrid({
   managedFiles,
   onDataTypeToggle,
   onRemoveFile,
+  onToggleSelection,
   className,
 }: FileManagementGridProps) {
   if (managedFiles.length === 0) {
@@ -44,6 +46,7 @@ export function FileManagementGrid({
             managedFile={managedFile}
             onDataTypeToggle={onDataTypeToggle}
             onRemoveFile={onRemoveFile}
+            {...(onToggleSelection && { onToggleSelection })}
           />
         ))}
       </div>

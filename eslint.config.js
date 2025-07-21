@@ -42,6 +42,13 @@ export default [
           jsx: true,
         },
       },
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        console: 'readonly',
+        globalThis: 'readonly',
+        URL: 'readonly',
+      },
     },
     settings: {
       react: {

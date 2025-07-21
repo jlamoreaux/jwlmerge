@@ -35,7 +35,7 @@ export function FileUploadZone({
 }: FileUploadZoneProps) {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
 
-  const validateFileAsync = async (uploadedFile: UploadedFile): Promise<void> => {
+  const validateFileAsync = useCallback(async (uploadedFile: UploadedFile): Promise<void> => {
     // Update status to validating
     setUploadedFiles((prev) =>
       prev.map((f) =>
@@ -94,7 +94,7 @@ export function FileUploadZone({
         )
       );
     }
-  };
+  }, [onValidatedFiles, onFilesSelected]);
 
   const onDrop = useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
@@ -133,7 +133,7 @@ export function FileUploadZone({
           void validateFileAsync(uploadedFile);
         });
     },
-    [onFilesSelected, uploadedFiles]
+    [validateFileAsync]
   );
 
   const removeFile = (id: string) => {

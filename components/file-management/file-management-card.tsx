@@ -13,6 +13,7 @@ interface FileManagementCardProps {
   managedFile: ManagedFile;
   onDataTypeToggle: (fileId: string, dataTypeId: string, enabled: boolean) => void;
   onRemoveFile: (fileId: string) => void;
+  onToggleSelection?: (fileId: string, selected: boolean) => void;
   className?: string;
 }
 
@@ -20,6 +21,7 @@ export function FileManagementCard({
   managedFile,
   onDataTypeToggle,
   onRemoveFile,
+  onToggleSelection,
   className,
 }: FileManagementCardProps) {
   const [showDataTypes, setShowDataTypes] = useState(false);
@@ -54,6 +56,15 @@ export function FileManagementCard({
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <CardTitle className="flex items-center space-x-2 text-base">
+            {onToggleSelection && (
+              <Checkbox
+                checked={managedFile.isSelected}
+                onCheckedChange={(checked) =>
+                  onToggleSelection(managedFile.id, checked as boolean)
+                }
+                className="mt-0.5"
+              />
+            )}
             <Smartphone className="h-4 w-4" />
             <span className="truncate">
               {managedFile.metadata.deviceName || 'Unknown Device'}
