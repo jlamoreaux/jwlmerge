@@ -1,11 +1,13 @@
 'use client';
 
+import { Smartphone, Calendar, HardDrive, X, Settings } from 'lucide-react';
+import { useState } from 'react';
+
+import type { ManagedFile } from '@/lib/types/file-management';
+
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import type { ManagedFile } from '@/lib/types/file-management';
-import { Smartphone, Calendar, HardDrive, X, Settings } from 'lucide-react';
-import { useState } from 'react';
 
 interface FileManagementCardProps {
   managedFile: ManagedFile;
@@ -23,7 +25,7 @@ export function FileManagementCard({
   const [showDataTypes, setShowDataTypes] = useState(false);
 
   const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
+    if (bytes === 0) {return '0 Bytes';}
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -31,7 +33,7 @@ export function FileManagementCard({
   };
 
   const formatDate = (dateString: string | undefined): string => {
-    if (!dateString) return 'Unknown';
+    if (!dateString) {return 'Unknown';}
     try {
       const date = new Date(dateString);
       return date.toLocaleDateString('en-US', {
@@ -67,7 +69,7 @@ export function FileManagementCard({
           </Button>
         </div>
       </CardHeader>
-      
+
       <CardContent className="space-y-4">
         {/* File Metadata */}
         <div className="space-y-2 text-sm">
@@ -80,7 +82,7 @@ export function FileManagementCard({
               {formatDate(managedFile.metadata.creationDate)}
             </span>
           </div>
-          
+
           <div className="flex items-center justify-between">
             <span className="flex items-center space-x-1 text-muted-foreground">
               <HardDrive className="h-3 w-3" />

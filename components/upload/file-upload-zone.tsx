@@ -8,6 +8,7 @@ import { FileMetadataDisplay } from './file-metadata-display';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { generateUUID } from '@/lib/utils/uuid';
 import { JWLValidator, validateJWLFileBasic, type ValidationResult, type JWLMetadata } from '@/lib/validation/jwl-validator';
 
 interface UploadedFile {
@@ -65,12 +66,12 @@ export function FileUploadZone({
           // Get all currently valid files including this one
           const allValidFiles = uploadedFiles
             .filter((f) => f.status === 'valid' && f.metadata)
-            .map((f) => ({ file: f.file, metadata: f.metadata! }));
-          
+            .map((f) => ({ file: f.file, metadata: f.metadata as JWLMetadata }));
+
           allValidFiles.push({ file: uploadedFile.file, metadata: result.metadata });
           onValidatedFiles(allValidFiles);
         }
-        
+
         if (onFilesSelected) {
           const validFiles = uploadedFiles
             .filter((f) => f.status === 'valid')
@@ -104,7 +105,7 @@ export function FileUploadZone({
         const basicError = validateJWLFileBasic(file);
         const uploadedFile: UploadedFile = {
           file,
-          id: globalThis.crypto.randomUUID(),
+          id: generateUUID(),
           status: basicError ? 'error' : 'pending',
           error: basicError || undefined,
           errorType: basicError ? 'extension' : undefined,
@@ -116,7 +117,7 @@ export function FileUploadZone({
       rejectedFiles.forEach((rejection) => {
         newFiles.push({
           file: rejection.file,
-          id: globalThis.crypto.randomUUID(),
+          id: generateUUID(),
           status: 'error',
           error: rejection.errors[0]?.message || 'File rejected',
           errorType: 'extension',
@@ -138,21 +139,21 @@ export function FileUploadZone({
   const removeFile = (id: string) => {
     setUploadedFiles((prev) => {
       const newFiles = prev.filter((f) => f.id !== id);
-      
+
       // Update callbacks with remaining valid files
       const validFiles = newFiles.filter((f) => f.status === 'valid');
-      
+
       if (onValidatedFiles) {
         const validFilesWithMetadata = validFiles
           .filter((f) => f.metadata)
-          .map((f) => ({ file: f.file, metadata: f.metadata! }));
+          .map((f) => ({ file: f.file, metadata: f.metadata as JWLMetadata }));
         onValidatedFiles(validFilesWithMetadata);
       }
-      
+
       if (onFilesSelected) {
         onFilesSelected(validFiles.map((f) => f.file));
       }
-      
+
       return newFiles;
     });
   };

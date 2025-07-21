@@ -1,19 +1,22 @@
 'use client';
 
+import { useState, useCallback } from 'react';
+
+import type { ManagedFile, JWLDataType } from '@/lib/types/file-management';
+import type { JWLMetadata } from '@/lib/validation/jwl-validator';
+
+import { FileManagementGrid } from '@/components/file-management/file-management-grid';
 import { PrivacyStatement } from '@/components/privacy-statement';
 import { FileUploadZone } from '@/components/upload/file-upload-zone';
-import { FileManagementGrid } from '@/components/file-management/file-management-grid';
-import type { ManagedFile, JWLDataType } from '@/lib/types/file-management';
 import { DEFAULT_JWL_DATA_TYPES } from '@/lib/types/file-management';
-import type { JWLMetadata } from '@/lib/validation/jwl-validator';
-import { useState, useCallback } from 'react';
+import { generateUUID } from '@/lib/utils/uuid';
 
 export default function Home() {
   const [managedFiles, setManagedFiles] = useState<ManagedFile[]>([]);
 
   const handleValidatedFiles = useCallback((files: Array<{ file: File; metadata: JWLMetadata }>) => {
     const newManagedFiles = files.map((validatedFile): ManagedFile => ({
-      id: globalThis.crypto.randomUUID(),
+      id: generateUUID(),
       file: validatedFile.file,
       metadata: validatedFile.metadata,
       dataTypes: DEFAULT_JWL_DATA_TYPES.map((dt): JWLDataType => ({
@@ -25,9 +28,9 @@ export default function Home() {
 
     setManagedFiles(prev => {
       // Remove duplicates based on file name and size
-      const existing = prev.filter(existing => 
-        !newManagedFiles.some(newFile => 
-          newFile.file.name === existing.file.name && 
+      const existing = prev.filter(existing =>
+        !newManagedFiles.some(newFile =>
+          newFile.file.name === existing.file.name &&
           newFile.file.size === existing.file.size
         )
       );
