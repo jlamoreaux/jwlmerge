@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
-    "@next/eslint-plugin-next": "^14.1.0",
+    "@next/eslint-plugin-next": "15.4.2",
     "@testing-library/react": "^14.1.2",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.47",

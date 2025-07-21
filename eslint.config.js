@@ -28,10 +28,10 @@ export default [
     files: ['**/*.{js,jsx,ts,tsx}'],
     plugins: {
       '@typescript-eslint': tseslint,
-      'react': react,
+      react: react,
       'react-hooks': reactHooks,
       '@next/next': next,
-      'import': importPlugin,
+      import: importPlugin,
     },
     languageOptions: {
       parser: tsparser,
@@ -86,7 +86,10 @@ export default [
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/no-misused-promises': 'error',
       '@typescript-eslint/await-thenable': 'error',
-      '@typescript-eslint/no-use-before-define': ['error', { functions: false }],
+      '@typescript-eslint/no-use-before-define': [
+        'error',
+        { functions: false },
+      ],
 
       // Import organization
       'import/order': [
@@ -134,15 +137,15 @@ export default [
       'no-alert': 'error',
       'prefer-const': 'error',
       'no-var': 'error',
-      'curly': ['error', 'all'],
-      'eqeqeq': ['error', 'always'],
+      curly: ['error', 'all'],
+      eqeqeq: ['error', 'always'],
       'no-throw-literal': 'error',
       'no-unneeded-ternary': 'error',
       'no-use-before-define': 'off',
 
       // Code style
-      'semi': ['error', 'always'],
-      'quotes': ['error', 'single', { avoidEscape: true }],
+      semi: ['error', 'always'],
+      quotes: ['error', 'single', { avoidEscape: true }],
       'comma-dangle': ['error', 'only-multiline'],
       'no-trailing-spaces': 'error',
       'no-multiple-empty-lines': ['error', { max: 1 }],
