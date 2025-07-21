@@ -154,7 +154,7 @@ export function IntelligentMergeInterface({
 
   const handleRetry = useCallback(() => {
     if (selectedMode) {
-      handleConfirmProcessingMode(selectedMode);
+      void handleConfirmProcessingMode(selectedMode);
     }
   }, [selectedMode, handleConfirmProcessingMode]);
 
@@ -174,7 +174,7 @@ export function IntelligentMergeInterface({
         state={progressState}
         onDownload={handleDownload}
         onReset={handleReset}
-        onRetry={() => void handleRetry()}
+        onRetry={handleRetry}
         className="mt-4"
       />
 
@@ -183,7 +183,7 @@ export function IntelligentMergeInterface({
         <ProcessingRecommendationModal
           isOpen={showRecommendationModal}
           onClose={() => setShowRecommendationModal(false)}
-          onConfirm={handleConfirmProcessingMode}
+          onConfirm={(mode) => void handleConfirmProcessingMode(mode)}
           recommendation={recommendationData.recommendation}
           fileSizeInfo={recommendationData.fileSizeInfo}
           deviceCapabilities={recommendationData.deviceCapabilities}

@@ -420,7 +420,14 @@ Test Results:
 `;
 
   for (const result of report.results) {
-    const icon = result.status === 'pass' ? '✅' : result.status === 'warning' ? '⚠️' : '❌';
+    let icon: string;
+    if (result.status === 'pass') {
+      icon = '✅';
+    } else if (result.status === 'warning') {
+      icon = '⚠️';
+    } else {
+      icon = '❌';
+    }
     output += `${icon} ${result.component}: ${result.message}\n`;
   }
 

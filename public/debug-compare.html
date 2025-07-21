@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JWL Database Comparison Tool</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .file-input { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .comparison-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        .comparison-table th, .comparison-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        .comparison-table th { background-color: #f2f2f2; }
+        .status-ok { color: green; font-weight: bold; }
+        .status-issue { color: red; font-weight: bold; }
+        .summary { padding: 15px; margin: 20px 0; border-radius: 5px; }
+        .summary.success { background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .summary.warning { background-color: #fff3cd; border: 1px solid #ffeaa7; color: #856404; }
+        .progress { margin: 10px 0; }
+        .error { color: red; margin: 10px 0; }
+        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #6c757d; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 JWLibrary Database Comparison Tool</h1>
+        <p>Compare source JWL files with merged result to verify successful merge operation.</p>
+        
+        <div class="file-input">
+            <label for="source1">Source File 1 (.jwlibrary):</label><br>
+            <input type="file" id="source1" accept=".jwlibrary" />
+        </div>
+        
+        <div class="file-input">
+            <label for="source2">Source File 2 (.jwlibrary):</label><br>
+            <input type="file" id="source2" accept=".jwlibrary" />
+        </div>
+        
+        <div class="file-input">
+            <label for="merged">Merged File (.jwlibrary):</label><br>
+            <input type="file" id="merged" accept=".jwlibrary" />
+        </div>
+        
+        <button onclick="compareFiles()" id="compareBtn">Compare Databases</button>
+        
+        <div id="progress" class="progress" style="display: none;">
+            <p>Processing files...</p>
+        </div>
+        
+        <div id="error" class="error" style="display: none;"></div>
+        
+        <div id="summary" style="display: none;"></div>
+        
+        <div id="results" style="display: none;">
+            <h2>📊 Table Comparison Results</h2>
+            <table class="comparison-table" id="comparisonTable">
+                <thead>
+                    <tr>
+                        <th>Table Name</th>
+                        <th>Source 1 Rows</th>
+                        <th>Source 2 Rows</th>
+                        <th>Merged Rows</th>
+                        <th>Expected Range</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="comparisonBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://unpkg.com/sql.js@1.13.0/dist/sql-wasm.js"></script>
+    
+    <script>
+        let SQL = null;
+        
+        // Initialize sql.js
+        async function initSQL() {
+            if (SQL) return SQL;
+            SQL = await initSqlJs({
+                locateFile: file => `https://unpkg.com/sql.js@1.13.0/dist/${file}`
+            });
+            return SQL;
+        }
+        
+        // Extract userData.db from JWL file
+        async function extractDatabase(file) {
+            const zip = await JSZip.loadAsync(file);
+            const userDataDb = await zip.file('userData.db')?.async('arraybuffer');
+            if (!userDataDb) {
+                throw new Error(`No userData.db found in ${file.name}`);
+            }
+            return new Uint8Array(userDataDb);
+        }
+        
+        // Get table information from database
+        async function analyzeDatabase(dbData) {
+            const db = new SQL.Database(dbData);
+            
+            // Get all tables
+            const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+            const tableNames = tables.length > 0 ? tables[0].values.map(row => row[0]) : [];
+            
+            const tableInfo = {};
+            
+            for (const tableName of tableNames) {
+                try {
+                    const result = db.exec(`SELECT COUNT(*) FROM ${tableName}`);
+                    const count = result.length > 0 ? result[0].values[0][0] : 0;
+                    tableInfo[tableName] = { count, error: null };
+                } catch (error) {
+                    tableInfo[tableName] = { count: 0, error: error.message };
+                }
+            }
+            
+            db.close();
+            return tableInfo;
+        }
+        
+        // Compare databases and generate results
+        async function compareFiles() {
+            const source1File = document.getElementById('source1').files[0];
+            const source2File = document.getElementById('source2').files[0];
+            const mergedFile = document.getElementById('merged').files[0];
+            
+            if (!source1File || !source2File || !mergedFile) {
+                showError('Please select all three files');
+                return;
+            }
+            
+            document.getElementById('compareBtn').disabled = true;
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('error').style.display = 'none';
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('summary').style.display = 'none';
+            
+            try {
+                // Initialize SQL.js
+                await initSQL();
+                
+                // Extract and analyze databases
+                const source1Data = await extractDatabase(source1File);
+                const source2Data = await extractDatabase(source2File);
+                const mergedData = await extractDatabase(mergedFile);
+                
+                const source1Info = await analyzeDatabase(source1Data);
+                const source2Info = await analyzeDatabase(source2Data);
+                const mergedInfo = await analyzeDatabase(mergedData);
+                
+                // Generate comparison results
+                displayResults(source1Info, source2Info, mergedInfo, 
+                              source1File.name, source2File.name, mergedFile.name);
+                
+            } catch (error) {
+                showError(`Error comparing files: ${error.message}`);
+            } finally {
+                document.getElementById('compareBtn').disabled = false;
+                document.getElementById('progress').style.display = 'none';
+            }
+        }
+        
+        // Display comparison results
+        function displayResults(source1Info, source2Info, mergedInfo, source1Name, source2Name, mergedName) {
+            // Get all unique table names
+            const allTables = new Set([
+                ...Object.keys(source1Info),
+                ...Object.keys(source2Info),
+                ...Object.keys(mergedInfo)
+            ]);
+            
+            const tableBody = document.getElementById('comparisonBody');
+            tableBody.innerHTML = '';
+            
+            let totalIssues = 0;
+            let totalTables = allTables.size;
+            
+            for (const tableName of Array.from(allTables).sort()) {
+                const count1 = source1Info[tableName]?.count || 0;
+                const count2 = source2Info[tableName]?.count || 0;
+                const countMerged = mergedInfo[tableName]?.count || 0;
+                
+                const minExpected = Math.max(count1, count2);
+                const maxExpected = count1 + count2;
+                const expectedRange = `${minExpected}-${maxExpected}`;
+                
+                // Determine status
+                let status, statusClass;
+                if (countMerged >= minExpected && countMerged <= maxExpected) {
+                    status = '✅ OK';
+                    statusClass = 'status-ok';
+                } else if (countMerged >= minExpected) {
+                    status = '⚠️ HIGH';
+                    statusClass = 'status-ok';
+                } else {
+                    status = '❌ LOW';
+                    statusClass = 'status-issue';
+                    totalIssues++;
+                }
+                
+                const row = tableBody.insertRow();
+                row.innerHTML = `
+                    <td>${tableName}</td>
+                    <td>${count1}</td>
+                    <td>${count2}</td>
+                    <td>${countMerged}</td>
+                    <td>${expectedRange}</td>
+                    <td class="${statusClass}">${status}</td>
+                `;
+            }
+            
+            // Show summary
+            const summaryDiv = document.getElementById('summary');
+            const isSuccess = totalIssues === 0;
+            summaryDiv.className = `summary ${isSuccess ? 'success' : 'warning'}`;
+            summaryDiv.innerHTML = `
+                <h3>${isSuccess ? '✅' : '⚠️'} Merge Comparison Summary</h3>
+                <p><strong>Files Compared:</strong></p>
+                <ul>
+                    <li>Source 1: ${source1Name}</li>
+                    <li>Source 2: ${source2Name}</li>
+                    <li>Merged: ${mergedName}</li>
+                </ul>
+                <p><strong>Results:</strong> ${totalTables - totalIssues}/${totalTables} tables merged successfully</p>
+                ${totalIssues > 0 ? `
+                    <p><strong>Note:</strong> Some discrepancies are normal due to:</p>
+                    <ul>
+                        <li>Duplicate records being skipped (INSERT OR IGNORE)</li>
+                        <li>UNIQUE constraint conflicts being resolved</li>
+                        <li>Different merge strategies for different table types</li>
+                    </ul>
+                ` : ''}
+            `;
+            
+            summaryDiv.style.display = 'block';
+            document.getElementById('results').style.display = 'block';
+        }
+        
+        // Show error message
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+    </script>
+</body>
+</html>

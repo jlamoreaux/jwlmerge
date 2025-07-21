@@ -90,7 +90,7 @@ export class MergeOrchestrator {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown orchestration error',
-        processingMode: finalMode!,
+        processingMode: finalMode,
         fallbackOccurred,
         processingTime: Date.now() - startTime,
       };

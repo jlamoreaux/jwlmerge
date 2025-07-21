@@ -35,7 +35,7 @@ export function detectDeviceCapabilities(): DeviceCapabilities {
   }
 
   // Get hardware information
-  const memory = (globalThis.navigator as any).deviceMemory || 'unknown';
+  const memory = (globalThis.navigator as { deviceMemory?: number }).deviceMemory || 'unknown';
   const cpuCores = globalThis.navigator.hardwareConcurrency || 'unknown';
   const userAgent = globalThis.navigator.userAgent;
 
@@ -109,7 +109,7 @@ export function detectDeviceCapabilities(): DeviceCapabilities {
     isLowPower,
     isMobile,
     details: {
-      memoryGB: memory !== 'unknown' ? memory : undefined,
+      ...(memory !== 'unknown' && { memoryGB: memory }),
       effectiveCpuCores,
       userAgent,
     },
