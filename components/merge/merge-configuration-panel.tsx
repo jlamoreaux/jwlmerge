@@ -1,6 +1,6 @@
 'use client';
 
-import { X, Download, Settings2, Lock, Server } from 'lucide-react';
+import { X, Download, Settings2, Lock } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 import { GlobalDataTypeControls } from './global-data-type-controls';
@@ -19,7 +19,7 @@ interface MergeConfigurationPanelProps {
   onGlobalDataTypeToggle: (dataTypeId: string, enabled: boolean) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
-  onStartMerge: (useServerSide: boolean) => void;
+  onStartMerge: () => void;
   className?: string;
 }
 
@@ -34,7 +34,6 @@ export function MergeConfigurationPanel({
   className,
 }: MergeConfigurationPanelProps) {
   const [isMobile, setIsMobile] = useState(false);
-  const [useServerSide, setUseServerSide] = useState(false);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -144,52 +143,14 @@ export function MergeConfigurationPanel({
                   />
                 </div>
 
-                {/* Processing Mode */}
+                {/* Privacy Notice */}
                 <div className="space-y-4 border-t pt-6">
-                  <h3 className="text-sm font-medium">Processing Mode</h3>
-
-                  <div className="space-y-3">
-                    <div
-                      className={cn(
-                        'rounded-lg border p-3 cursor-pointer transition-all',
-                        !useServerSide && 'border-green-200 bg-green-50'
-                      )}
-                      onClick={() => setUseServerSide(false)}
-                    >
-                      <div className="flex items-center space-x-3">
-                        <div className={cn(
-                          'h-4 w-4 rounded-full border-2 flex items-center justify-center',
-                          !useServerSide ? 'border-green-600 bg-green-600' : 'border-gray-300'
-                        )}>
-                          {!useServerSide && <div className="h-2 w-2 rounded-full bg-white" />}
-                        </div>
-                        <Lock className="h-4 w-4 text-green-600" />
-                        <div className="flex-1">
-                          <div className="font-medium text-sm">Client-Side (Recommended)</div>
-                          <div className="text-xs text-muted-foreground">Maximum privacy - files never leave your browser</div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div
-                      className={cn(
-                        'rounded-lg border p-3 cursor-pointer transition-all',
-                        useServerSide && 'border-blue-200 bg-blue-50'
-                      )}
-                      onClick={() => setUseServerSide(true)}
-                    >
-                      <div className="flex items-center space-x-3">
-                        <div className={cn(
-                          'h-4 w-4 rounded-full border-2 flex items-center justify-center',
-                          useServerSide ? 'border-blue-600 bg-blue-600' : 'border-gray-300'
-                        )}>
-                          {useServerSide && <div className="h-2 w-2 rounded-full bg-white" />}
-                        </div>
-                        <Server className="h-4 w-4 text-blue-600" />
-                        <div className="flex-1">
-                          <div className="font-medium text-sm">Server-Side (Faster)</div>
-                          <div className="text-xs text-muted-foreground">Faster processing - files temporarily uploaded</div>
-                        </div>
+                  <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                    <div className="flex items-center space-x-3">
+                      <Lock className="h-4 w-4 text-green-600" />
+                      <div className="flex-1">
+                        <div className="font-medium text-sm">Secure Client-Side Processing</div>
+                        <div className="text-xs text-muted-foreground">Maximum privacy - files never leave your browser</div>
                       </div>
                     </div>
                   </div>
@@ -228,7 +189,7 @@ export function MergeConfigurationPanel({
             <div className="border-t p-4">
               <MergeActionButton
                 managedFiles={selectedFiles}
-                onStartMerge={() => onStartMerge(useServerSide)}
+                onStartMerge={() => onStartMerge()}
                 disabled={!hasValidFiles}
               />
             </div>

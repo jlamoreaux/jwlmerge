@@ -4,7 +4,6 @@ import { useState, useCallback } from 'react';
 
 import { MergeActionButton } from './merge-action-button';
 import { MergeProgressIndicator, type MergeProgressState } from './merge-progress-indicator';
-import { ProcessingRecommendationModal } from './processing-recommendation-modal';
 
 import type { ManagedFile } from '@/lib/types/file-management';
 
@@ -26,54 +25,31 @@ export function IntelligentMergeInterface({
   onError,
   className,
 }: IntelligentMergeInterfaceProps) {
-  const [showRecommendationModal, setShowRecommendationModal] = useState(false);
   const [progressState, setProgressState] = useState<MergeProgressState>({
     status: 'idle',
     message: '',
     progress: 0,
   });
-  const [selectedMode, setSelectedMode] = useState<'client' | 'server' | null>(null);
 
-  // Get recommendation data
-  const getRecommendationData = useCallback(() => {
-    if (managedFiles.length === 0) {return null;}
 
-    const deviceCapabilities = detectDeviceCapabilities();
-    const fileSizeInfo = calculateFileSizes(managedFiles);
-    const recommendation = MergeOrchestrator.getRecommendation(managedFiles);
+  const handleStartMerge = useCallback(async () => {
+    if (managedFiles.length === 0) {return;}
 
-    return {
-      deviceCapabilities,
-      fileSizeInfo,
-      recommendation: recommendation.recommendation,
-    };
-  }, [managedFiles]);
-
-  const handleStartMerge = useCallback(() => {
-    const recommendationData = getRecommendationData();
-    if (!recommendationData) {return;}
-
-    // Show recommendation modal for user to choose processing mode
-    setShowRecommendationModal(true);
-  }, [getRecommendationData]);
-
-  const handleConfirmProcessingMode = useCallback(async (mode: 'client' | 'server') => {
-    setSelectedMode(mode);
-    setShowRecommendationModal(false);
+    // Always use client-side processing
 
     // Initialize progress state
     setProgressState({
       status: 'preparing',
-      message: 'Initializing merge process...',
+      message: 'Initializing secure client-side merge...',
       progress: 0,
-      processingMode: mode,
+      processingMode: 'client',
     });
 
     try {
       // Use MergeOrchestrator for intelligent merge handling
       const result = await MergeOrchestrator.orchestrateMerge(managedFiles, {
-        preferredMode: mode,
-        allowFallback: true,
+        preferredMode: 'client',
+        allowFallback: false, // No fallback to server
         onProgress: (message, progress) => {
           setProgressState(prev => ({
             ...prev,
@@ -129,7 +105,7 @@ export function IntelligentMergeInterface({
         status: 'error',
         message: 'Merge failed',
         progress: 0,
-        processingMode: mode,
+        processingMode: 'client',
         error: errorMessage,
       });
 
@@ -149,16 +125,11 @@ export function IntelligentMergeInterface({
       message: '',
       progress: 0,
     });
-    setSelectedMode(null);
   }, []);
 
   const handleRetry = useCallback(() => {
-    if (selectedMode) {
-      void handleConfirmProcessingMode(selectedMode);
-    }
-  }, [selectedMode, handleConfirmProcessingMode]);
-
-  const recommendationData = getRecommendationData();
+    void handleStartMerge();
+  }, [handleStartMerge]);
 
   return (
     <div className={className}>
@@ -177,18 +148,6 @@ export function IntelligentMergeInterface({
         onRetry={handleRetry}
         className="mt-4"
       />
-
-      {/* Processing Recommendation Modal */}
-      {showRecommendationModal && recommendationData && (
-        <ProcessingRecommendationModal
-          isOpen={showRecommendationModal}
-          onClose={() => setShowRecommendationModal(false)}
-          onConfirm={(mode) => void handleConfirmProcessingMode(mode)}
-          recommendation={recommendationData.recommendation}
-          fileSizeInfo={recommendationData.fileSizeInfo}
-          deviceCapabilities={recommendationData.deviceCapabilities}
-        />
-      )}
     </div>
   );
 }
@@ -200,7 +159,6 @@ export function testIntelligentMergeSystem(managedFiles: ManagedFile[]) {
   const orchestratorRecommendation = MergeOrchestrator.getRecommendation(managedFiles);
   const clientFeasibility = MergeOrchestrator.canProcessClientSide(managedFiles);
   const clientTimeEstimate = MergeOrchestrator.estimateProcessingTime(managedFiles, 'client');
-  const serverTimeEstimate = MergeOrchestrator.estimateProcessingTime(managedFiles, 'server');
 
   return {
     deviceCapabilities,
@@ -209,7 +167,6 @@ export function testIntelligentMergeSystem(managedFiles: ManagedFile[]) {
     clientFeasibility,
     timeEstimates: {
       client: clientTimeEstimate,
-      server: serverTimeEstimate,
     },
     summary: {
       recommendedMode: orchestratorRecommendation.recommendation.mode,

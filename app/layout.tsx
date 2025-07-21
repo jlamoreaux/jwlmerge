@@ -7,8 +7,8 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata = {
-  title: 'JWL Merge Web',
-  description: 'Web application for JWL file management and merging',
+  title: 'JWL Merge',
+  description: 'Secure JWL file management and merging application',
 };
 
 export default function RootLayout({

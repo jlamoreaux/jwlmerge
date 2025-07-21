@@ -98,7 +98,7 @@ export default function Home() {
     );
   }, []);
 
-  const handleStartMerge = useCallback((useServerSide: boolean) => {
+  const handleStartMerge = useCallback(() => {
     const selectedFiles = managedFiles.filter(file => file.isSelected);
 
     if (selectedFiles.length < 2) {
@@ -109,7 +109,7 @@ export default function Home() {
     void (async () => {
       try {
         const result = await JWLMerger.mergeFiles(selectedFiles, {
-          useServerSide,
+          useServerSide: false, // Always use client-side
           onProgress: (status) => {
             console.warn('Merge progress:', status);
             // TODO: Show progress in UI
@@ -138,7 +138,7 @@ export default function Home() {
       <section className="px-6 py-12 md:py-20">
         <div className="mx-auto max-w-4xl text-center">
           <h1 className="mb-6 text-4xl font-bold tracking-tight md:text-6xl">
-            JWL Merge Web
+            JWL Merge
           </h1>
           <p className="mb-8 text-lg text-muted-foreground md:text-xl">
             Merge and manage your JWL library files with ease. Process files securely in your browser with complete privacy.
