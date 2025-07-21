@@ -21,6 +21,7 @@ export default [
       '.vercel/**',
       'next-env.d.ts',
       'tsconfig.tsbuildinfo',
+      'public/workers/**',
     ],
   },
   {
@@ -115,9 +116,11 @@ export default [
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
 
-      // Next.js
+      // Next.js (compatible rules only for ESLint 9)
       '@next/next/no-html-link-for-pages': 'error',
       '@next/next/no-img-element': 'error',
+      '@next/next/no-sync-scripts': 'error',
+      '@next/next/no-title-in-document-head': 'error',
 
       // General
       'no-unused-vars': 'off', // Turned off in favor of @typescript-eslint/no-unused-vars
