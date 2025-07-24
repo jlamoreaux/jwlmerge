@@ -46,8 +46,8 @@ export class MergeWorkerClient {
   async mergeFiles(managedFiles: ManagedFile[]): Promise<WorkerMergeResult> {
     return new Promise((resolve, reject) => {
       try {
-        // Create Web Worker
-        this.worker = new Worker('/workers/merge-worker.js');
+        // Create Web Worker with cache-busting timestamp
+        this.worker = new Worker(`/workers/merge-worker.js?v=${Date.now()}`);
 
         // Set up message handling
         this.worker.onmessage = (e: MessageEvent<WorkerMessage>) => {
@@ -77,14 +77,13 @@ export class MergeWorkerClient {
           }
         };
 
-        this.worker.onerror = (error) => {
+        this.worker.onerror = error => {
           this.cleanup();
           reject(new Error(`Worker error: ${error.message}`));
         };
 
         // Prepare files for worker
         void this.prepareAndSendFiles(managedFiles);
-
       } catch (error) {
         this.cleanup();
         reject(error);
@@ -102,30 +101,56 @@ export class MergeWorkerClient {
       // Convert files to ArrayBuffers
       const workerFiles = await Promise.all(
         managedFiles.map(async (file, index) => {
-          this.onProgress?.(`Reading ${file.file.name}...`, (index / managedFiles.length) * 5);
+          this.onProgress?.(
+            `Reading ${file.file.name}...`,
+            (index / managedFiles.length) * 5
+          );
 
           const arrayBuffer = await file.file.arrayBuffer();
 
           return {
             name: file.file.name,
             data: arrayBuffer,
-            dataTypes: file.dataTypes.reduce((acc, dt) => {
-              acc[dt.id] = dt.enabled;
-              return acc;
-            }, {} as Record<string, boolean>),
+            dataTypes: file.dataTypes.reduce(
+              (acc, dt) => {
+                acc[dt.id] = dt.enabled;
+                return acc;
+              },
+              {} as Record<string, boolean>
+            ),
           };
         })
       );
 
       // Create global data types config
-      const globalDataTypes = managedFiles[0]?.dataTypes.reduce((acc, dt) => {
-        // Check if this data type is enabled in any file
-        const isEnabled = managedFiles.some(file =>
-          file.dataTypes.find(fdt => fdt.id === dt.id)?.enabled
+      // If no files have explicit data type configurations, enable all data types by default
+      const firstFileDataTypes = managedFiles[0]?.dataTypes;
+      let globalDataTypes: Record<string, boolean> = {};
+
+      if (firstFileDataTypes && firstFileDataTypes.length > 0) {
+        // Files have data type configurations, use them
+        globalDataTypes = firstFileDataTypes.reduce(
+          (acc, dt) => {
+            // Check if this data type is enabled in any file
+            const isEnabled = managedFiles.some(
+              file => file.dataTypes.find(fdt => fdt.id === dt.id)?.enabled
+            );
+            acc[dt.id] = isEnabled;
+            return acc;
+          },
+          {} as Record<string, boolean>
         );
-        acc[dt.id] = isEnabled;
-        return acc;
-      }, {} as Record<string, boolean>) || {};
+      } else {
+        // No explicit data type configurations, enable all data types by default
+        globalDataTypes = {
+          notes: true,
+          bookmarks: true,
+          highlights: true,
+          tags: true,
+          inputfields: true,
+          playlists: true,
+        };
+      }
 
       const config: MergeWorkerConfig = {
         files: workerFiles,
@@ -138,10 +163,11 @@ export class MergeWorkerClient {
         files: config.files,
         mergeConfig: { globalDataTypes: config.globalDataTypes },
       });
-
     } catch (error) {
       this.cleanup();
-      throw new Error(`Failed to prepare files: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to prepare files: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   }
 

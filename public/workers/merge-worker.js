@@ -1,6 +1,7 @@
 /**
  * Web Worker for client-side JWL file merging
  * Runs heavy operations in background thread to avoid UI freezing
+ * Version: 2.0 - Holistic Location merge implementation
  */
 
 // Import JSZip for ZIP operations
@@ -73,6 +74,49 @@ async function mergeMediaFiles(databases) {
   
   console.log(`Media merge complete: ${mediaFiles.size} unique files from ${databases.length} databases`);
   return mediaFiles;
+}
+
+// Create proper constraint signature for Location entries
+// Handles the two unique constraints in the Location table correctly
+function createLocationConstraintSignature(row, columnNames) {
+  const type = row[columnNames.indexOf('Type')];
+  const bookNumber = row[columnNames.indexOf('BookNumber')];
+  const chapterNumber = row[columnNames.indexOf('ChapterNumber')];
+  const keySymbol = row[columnNames.indexOf('KeySymbol')];
+  const mepsLanguage = row[columnNames.indexOf('MepsLanguage')];
+  const documentId = row[columnNames.indexOf('DocumentId')];
+  const track = row[columnNames.indexOf('Track')];
+  const issueTagNumber = row[columnNames.indexOf('IssueTagNumber')];
+  
+  // Normalize MepsLanguage: treat NULL and 0 as equivalent
+  const normalizedMepsLang = (mepsLanguage === null || mepsLanguage === 0) ? '0' : String(mepsLanguage);
+  
+  // Determine which unique constraint applies based on Type and data structure
+  // The Location table has two unique constraints:
+  // 1. UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type) - for Bible chapters (Type=0 with BookNumber/ChapterNumber)
+  // 2. UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type) - for publications (Type=1 and Type=0 without BookNumber/ChapterNumber)
+  
+  if (type === 0 && bookNumber !== null && bookNumber !== 0 && chapterNumber !== null && chapterNumber !== 0) {
+    // Type 0 with BookNumber/ChapterNumber: Bible chapter - use constraint 1
+    return [
+      bookNumber,
+      chapterNumber,
+      keySymbol || 'NULL',
+      normalizedMepsLang,
+      type || 'NULL'
+    ].join('|');
+  } else {
+    // Type 1 (Bible publications) OR Type 0 without BookNumber/ChapterNumber (publications/documents)
+    // Both use constraint 2: UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type)
+    return [
+      keySymbol || 'NULL',
+      issueTagNumber || 'NULL',
+      normalizedMepsLang,
+      documentId || 'NULL',
+      track || 'NULL',
+      type || 'NULL'
+    ].join('|');
+  }
 }
 
 // Process merge operation
@@ -468,23 +512,37 @@ function validateMergeIntegrity(targetDb) {
       console.log('✅ No orphaned Notes found');
     }
     
-    // 3. Verify Location content integrity (check for duplicates that should have been merged)
+    // 3. Verify Location content integrity using the same constraint handler logic
     const duplicateLocations = targetDb.exec(`
-      SELECT BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type, IssueTagNumber, COUNT(*) as count
-      FROM Location 
-      GROUP BY BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type, IssueTagNumber
+      WITH LocationConstraints AS (
+        SELECT LocationId,
+               CASE 
+                 WHEN Type = 0 AND BookNumber IS NOT NULL AND BookNumber != 0 AND ChapterNumber IS NOT NULL AND ChapterNumber != 0 THEN
+                   -- Type 0 Bible chapter - UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type)
+                   BookNumber || '|' || ChapterNumber || '|' || COALESCE(KeySymbol, 'NULL') || '|' || 
+                   CASE WHEN MepsLanguage IS NULL OR MepsLanguage = 0 THEN '0' ELSE MepsLanguage END || '|' || Type
+                 ELSE
+                   -- Type 1 OR Type 0 Publication - UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type)
+                   COALESCE(KeySymbol, 'NULL') || '|' || COALESCE(IssueTagNumber, 'NULL') || '|' || 
+                   CASE WHEN MepsLanguage IS NULL OR MepsLanguage = 0 THEN '0' ELSE MepsLanguage END || '|' || 
+                   COALESCE(DocumentId, 'NULL') || '|' || COALESCE(Track, 'NULL') || '|' || Type
+               END as ConstraintSignature
+        FROM Location
+      )
+      SELECT ConstraintSignature, COUNT(*) as count
+      FROM LocationConstraints
+      GROUP BY ConstraintSignature
       HAVING COUNT(*) > 1
     `);
     
     if (duplicateLocations.length > 0 && duplicateLocations[0].values.length > 0) {
       console.error(`🚨 CRITICAL: Found ${duplicateLocations[0].values.length} duplicate Location entries that should have been merged!`);
       duplicateLocations[0].values.forEach(row => {
-        const [bookNum, chapterNum, keySymbol, mepsLang, type, issueTag, count] = row;
-        const desc = issueTag ? `${keySymbol}/${issueTag}` : `Book ${bookNum}, Chapter ${chapterNum} (${keySymbol})`;
-        console.error(`   Duplicate: ${desc} (${count} entries)`);
+        const [constraintSignature, count] = row;
+        console.error(`  - Duplicate constraint signature: ${constraintSignature} (${count} entries)`);
       });
     } else {
-      console.log('✅ No duplicate Location content found');
+      console.log('✅ No duplicate Location content found (constraint-aware merge successful)');
     }
     
     // 4. Count statistics
@@ -547,52 +605,49 @@ function updateForeignKeyReferences(row, tableName, columnNames, targetDb) {
     const columnName = columnNames[index];
     const referencedTable = fkRelations[columnName];
     
-    if (referencedTable && idMappings.has(referencedTable) && value !== null) {
-      // First check if we have a mapping for this ID (prioritize mappings)
-      const mapping = idMappings.get(referencedTable);
-      const newId = mapping.get(value);
-      
-      if (newId !== undefined) {
-        // We have a mapping for this ID, use the new ID
-        if (referencedTable === 'Location') {
-          console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (Location mapping)`);
-        } else {
-          console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (${referencedTable})`);
+    if (referencedTable && value !== null) {
+      // ALWAYS check for ID mappings first - mappings represent correct semantic linkage
+      if (idMappings.has(referencedTable)) {
+        const mapping = idMappings.get(referencedTable);
+        const newId = mapping.get(value);
+        
+        if (newId !== undefined) {
+          // We have a mapping for this ID - use it (mappings always take priority)
+          if (referencedTable === 'Location') {
+            console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (Location mapping)`);
+          } else {
+            console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (${referencedTable})`);
+          }
+          return newId;
         }
-        return newId;
       }
       
-      // No mapping found, check if the original ID still exists in the target database
+      // No mapping found - check if original ID exists (and is valid)
+      const idColumn = referencedTable === 'UserMark' ? 'UserMarkId' : 
+                      referencedTable === 'Note' ? 'NoteId' :
+                      referencedTable === 'Tag' ? 'TagId' :
+                      referencedTable === 'PlaylistItem' ? 'PlaylistItemId' :
+                      referencedTable === 'Location' ? 'LocationId' :
+                      referencedTable === 'PlaylistItemMarker' ? 'PlaylistItemMarkerId' :
+                      referencedTable === 'PlaylistItemAccuracy' ? 'PlaylistItemAccuracyId' :
+                      referencedTable === 'IndependentMedia' ? 'IndependentMediaId' :
+                      `${referencedTable}Id`;
+      
       try {
-        const idColumn = referencedTable === 'UserMark' ? 'UserMarkId' : 
-                        referencedTable === 'Note' ? 'NoteId' :
-                        referencedTable === 'Tag' ? 'TagId' :
-                        referencedTable === 'PlaylistItem' ? 'PlaylistItemId' :
-                        referencedTable === 'Location' ? 'LocationId' :
-                        referencedTable === 'PlaylistItemMarker' ? 'PlaylistItemMarkerId' :
-                        referencedTable === 'PlaylistItemAccuracy' ? 'PlaylistItemAccuracyId' :
-                        referencedTable === 'IndependentMedia' ? 'IndependentMediaId' :
-                        `${referencedTable}Id`;
-        
         const existsQuery = `SELECT COUNT(*) FROM ${referencedTable} WHERE ${idColumn} = ?`;
         const existsResult = targetDb.exec(existsQuery, [value]);
-        const exists = existsResult.length > 0 && existsResult[0].values[0][0] > 0;
+        const originalIdExists = existsResult.length > 0 && existsResult[0].values[0][0] > 0;
         
-        if (exists) {
-          // Original ID exists and no mapping needed, keep it unchanged
+        if (originalIdExists) {
+          // Original ID exists and no mapping needed, keep it as-is
           return value;
         } else {
-          // Original ID doesn't exist and no mapping available - this is an error condition
-          if (referencedTable === 'Location') {
-            console.error(`🚨 CRITICAL FK Error: ${tableName}.${columnName} references non-existent Location ID ${value}`);
-            console.error(`   This will result in orphaned ${tableName} records!`);
-          } else {
-            console.warn(`⚠ FK Error: ${tableName}.${columnName} references non-existent ${referencedTable} ID ${value}`);
-          }
-          return value;
+          // Original ID doesn't exist and no mapping available - orphaned reference
+          console.warn(`⚠️ Orphaned FK reference: ${tableName}.${columnName} = ${value} (${referencedTable} not found)`);
+          return value; // Keep original value but it will be orphaned
         }
       } catch (error) {
-        console.warn(`Error checking FK existence for ${referencedTable}:`, error.message);
+        console.warn(`Error checking FK reference existence:`, error.message);
         return value;
       }
     }
@@ -606,7 +661,8 @@ function updateForeignKeyReferences(row, tableName, columnNames, targetDb) {
 // Phase 2: Insert unique content with proper ID conflict resolution
 async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
   try {
-    console.log('🔄 Starting holistic Location merge with global duplicate detection...');
+    console.log('🔄 Starting constraint-aware Location merge with global duplicate detection...');
+    console.log('✨ CONSTRAINT-AWARE MERGE v2.8 - Fixed ID conflict mapping: track all reassignments!');
     
     // PHASE 1: Collect ALL locations from ALL databases
     const allLocations = [];
@@ -637,12 +693,11 @@ async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
             originalLocationId: row[columnNames.indexOf('LocationId')]
           };
           
-          // Create content signature (all columns except LocationId)
-          const idColumnIndex = columnNames.indexOf('LocationId');
-          const contentSignature = row.map((value, index) => {
-            if (index === idColumnIndex) return null;
-            return value === null ? 'NULL' : String(value);
-          }).join('|');
+          // Create content signature using proper unique constraint logic
+          // The Location table has two unique constraints that must be respected:
+          // 1. UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type) - for Bible chapters
+          // 2. UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type) - for publications/documents
+          const contentSignature = createLocationConstraintSignature(row, columnNames);
           
           locationInfo.contentSignature = contentSignature;
           allLocations.push(locationInfo);
@@ -671,7 +726,11 @@ async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
       if (firstOccurrence !== locationInfo) {
         // This is a duplicate - map to the first occurrence's final ID
         const firstOccurrenceId = firstOccurrence.finalLocationId || firstOccurrence.originalLocationId;
-        trackIdMapping('Location', originalLocationId, firstOccurrenceId);
+        
+        // Only create ID mapping if the IDs are actually different
+        if (originalLocationId !== firstOccurrenceId) {
+          trackIdMapping('Location', originalLocationId, firstOccurrenceId);
+        }
         
         const keySymbol = row[columnNames.indexOf('KeySymbol')] || 'NULL';
         console.log(`  🔗 Duplicate ${keySymbol} location: ${originalLocationId} (${sourceDb}) → ${firstOccurrenceId}`);
@@ -726,10 +785,10 @@ async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
       }
     }
     
-    console.log(`✅ Holistic Location merge complete: ${insertedCount} inserted, ${duplicateCount} duplicates mapped`);
+    console.log(`✅ Semantic Location merge complete: ${insertedCount} inserted, ${duplicateCount} duplicates mapped`);
     
   } catch (error) {
-    console.error('❌ Error in holistic mergeLocationData:', error);
+    console.error('❌ Error in semantic mergeLocationData:', error);
     throw error;
   }
 }
