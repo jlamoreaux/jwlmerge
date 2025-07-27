@@ -1,7 +1,7 @@
 /**
  * Web Worker for client-side JWL file merging
  * Runs heavy operations in background thread to avoid UI freezing
- * Version: 2.0 - Holistic Location merge implementation
+ * Version: 2.12 - Fixed global mapping creation for source-specific conflicts
  */
 
 // Import JSZip for ZIP operations
@@ -435,13 +435,26 @@ function getTableMergeOrder() {
 
 // Global ID mapping tracker for foreign key updates
 const idMappings = new Map(); // Map: tableName -> Map(originalId -> newId)
+const sourceSpecificMappings = new Map(); // Map: sourceDb -> Map(tableName -> Map(originalId -> newId))
 
 // Track ID remapping for foreign key updates
-function trackIdMapping(tableName, originalId, newId) {
-  if (!idMappings.has(tableName)) {
-    idMappings.set(tableName, new Map());
+function trackIdMapping(tableName, originalId, newId, sourceDb = null) {
+  if (sourceDb) {
+    // Source-specific mapping (for resolving conflicts)
+    if (!sourceSpecificMappings.has(sourceDb)) {
+      sourceSpecificMappings.set(sourceDb, new Map());
+    }
+    if (!sourceSpecificMappings.get(sourceDb).has(tableName)) {
+      sourceSpecificMappings.get(sourceDb).set(tableName, new Map());
+    }
+    sourceSpecificMappings.get(sourceDb).get(tableName).set(originalId, newId);
+  } else {
+    // Global mapping (backward compatibility for non-source-specific cases)
+    if (!idMappings.has(tableName)) {
+      idMappings.set(tableName, new Map());
+    }
+    idMappings.get(tableName).set(originalId, newId);
   }
-  idMappings.get(tableName).set(originalId, newId);
 }
 
 // Helper function to get readable location description for logging
@@ -582,7 +595,7 @@ function validateMergeIntegrity(targetDb) {
 }
 
 // Update foreign key references based on ID mappings
-function updateForeignKeyReferences(row, tableName, columnNames, targetDb) {
+function updateForeignKeyReferences(row, tableName, columnNames, targetDb, sourceDb = null) {
   // Define foreign key relationships
   const foreignKeyMappings = {
     'BlockRange': { 'UserMarkId': 'UserMark' },
@@ -606,13 +619,28 @@ function updateForeignKeyReferences(row, tableName, columnNames, targetDb) {
     const referencedTable = fkRelations[columnName];
     
     if (referencedTable && value !== null) {
-      // ALWAYS check for ID mappings first - mappings represent correct semantic linkage
+      // FIRST: Check for source-specific mappings (highest priority for conflict resolution)
+      if (sourceDb && sourceSpecificMappings.has(sourceDb)) {
+        const sourceMap = sourceSpecificMappings.get(sourceDb);
+        if (sourceMap.has(referencedTable)) {
+          const mapping = sourceMap.get(referencedTable);
+          const newId = mapping.get(value);
+          
+          if (newId !== undefined) {
+            // We have a source-specific mapping - use it (highest priority)
+            console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (${sourceDb} ${referencedTable} mapping)`);
+            return newId;
+          }
+        }
+      }
+      
+      // SECOND: Check for global ID mappings - mappings represent correct semantic linkage
       if (idMappings.has(referencedTable)) {
         const mapping = idMappings.get(referencedTable);
         const newId = mapping.get(value);
         
         if (newId !== undefined) {
-          // We have a mapping for this ID - use it (mappings always take priority)
+          // We have a global mapping for this ID - use it
           if (referencedTable === 'Location') {
             console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (Location mapping)`);
           } else {
@@ -662,7 +690,7 @@ function updateForeignKeyReferences(row, tableName, columnNames, targetDb) {
 async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
   try {
     console.log('🔄 Starting constraint-aware Location merge with global duplicate detection...');
-    console.log('✨ CONSTRAINT-AWARE MERGE v2.8 - Fixed ID conflict mapping: track all reassignments!');
+    console.log('✨ CONSTRAINT-AWARE MERGE v2.12 - Fixed global mapping creation for source-specific conflicts!');
     
     // PHASE 1: Collect ALL locations from ALL databases
     const allLocations = [];
@@ -729,7 +757,9 @@ async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
         
         // Only create ID mapping if the IDs are actually different
         if (originalLocationId !== firstOccurrenceId) {
-          trackIdMapping('Location', originalLocationId, firstOccurrenceId);
+          // CRITICAL: Create source-specific mapping for duplicates
+          // This ensures foreign keys from this source DB follow their content to the correct final ID
+          trackIdMapping('Location', originalLocationId, firstOccurrenceId, sourceDb);
         }
         
         const keySymbol = row[columnNames.indexOf('KeySymbol')] || 'NULL';
@@ -753,6 +783,10 @@ async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
           adjustedRow[idColumnIndex] = newLocationId;
           
           console.log(`  ⚠️ LocationId conflict: ${originalLocationId} → ${newLocationId} (${sourceDb})`);
+          
+          // CRITICAL: Create source-specific mapping for ID conflicts
+          // This ensures foreign keys from this source DB follow their content to the new ID
+          trackIdMapping('Location', originalLocationId, newLocationId, sourceDb);
         }
         
         // Insert the location
@@ -769,9 +803,9 @@ async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
           // Store final ID back to first occurrence for duplicate mapping
           firstOccurrence.finalLocationId = finalLocationId;
           
-          // Create mapping if ID was changed
+          // Create source-specific mapping if ID was changed (for collision resolution)
           if (finalLocationId !== originalLocationId) {
-            trackIdMapping('Location', originalLocationId, finalLocationId);
+            trackIdMapping('Location', originalLocationId, finalLocationId, sourceDb);
           }
           
           const keySymbol = row[columnNames.indexOf('KeySymbol')] || 'NULL';
@@ -1177,7 +1211,7 @@ async function mergeTableData(targetDb, sourceDatabases, tableName, mergeConfig)
           }
           
           // Update foreign key references based on ID mappings
-          adjustedRow = updateForeignKeyReferences(adjustedRow, tableName, columnNames, targetDb);
+          adjustedRow = updateForeignKeyReferences(adjustedRow, tableName, columnNames, targetDb, sourceDb.name);
           
           const placeholders = new Array(adjustedRow.length).fill('?').join(',');
           
