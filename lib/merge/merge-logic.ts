@@ -1,9 +1,6 @@
-import JSZip from 'jszip';
-
 // import { startMerge, uploadFile, getDownloadUrl, pollMergeStatus } from '@/lib/api/client';
 
 import type { ManagedFile } from '@/lib/types/file-management';
-import type { JWLMetadata } from '@/lib/validation/jwl-validator';
 // import type { CreateMergeRequest, MergeConfig } from '@/lib/types/database';
 
 import { detectDeviceCapabilities } from '@/lib/utils/device-capabilities';
@@ -89,110 +86,42 @@ export class JWLMerger {
         };
       }
 
-      if (isWebWorkerSupported()) {
-        onProgress?.('Using Web Worker for background processing...', 0);
-
-        // Use Web Worker for heavy processing
-        const workerClient = new MergeWorkerClient((message, progress) => {
-          onProgress?.(message, progress);
-        });
-
-        try {
-          const result = await workerClient.mergeFiles(validFiles);
-
-          return {
-            success: true,
-            blob: result.blob,
-            fileName: result.fileName,
-          };
-        } catch (error) {
-          onProgress?.('Web Worker failed, trying fallback method...', 0);
-          console.warn('Web Worker merge failed:', error);
-          // Fall through to fallback implementation
-        } finally {
-          workerClient.terminate();
-        }
+      // Merging is done by the Web Worker: it is the only implementation that
+      // actually opens the SQLite databases and reconciles their rows. There
+      // is no meaningful merge to fall back to, so a failure here is reported
+      // rather than papered over.
+      if (!isWebWorkerSupported()) {
+        return {
+          success: false,
+          error:
+            'This browser does not support Web Workers, which are required to merge backup files. ' +
+            'Please try a current version of Chrome, Firefox, Safari or Edge.',
+        };
       }
 
-      // Fallback implementation without Web Worker
-      onProgress?.('Processing files (fallback mode)...', 10);
+      onProgress?.('Using Web Worker for background processing...', 0);
 
-      // Create new ZIP for merged content
-      const mergedZip = new JSZip();
-      let mergedMetadata: JWLMetadata | null = null;
+      const workerClient = new MergeWorkerClient((message, progress) => {
+        onProgress?.(message, progress);
+      });
 
-      // Process each file
-      for (let i = 0; i < validFiles.length; i++) {
-        const managedFile = validFiles[i];
-        if (!managedFile) {continue;}
-        const progress = 10 + (i / validFiles.length) * 70;
-        onProgress?.(`Processing ${managedFile.file.name}...`, progress);
+      try {
+        const result = await workerClient.mergeFiles(validFiles);
 
-        const fileZip = await JSZip.loadAsync(managedFile.file);
-
-        // Read manifest
-        const manifestFile = fileZip.file('manifest.json');
-        if (!manifestFile) {continue;}
-
-        // Use first file's metadata as base, update device name to indicate merge
-        if (!mergedMetadata) {
-          mergedMetadata = {
-            ...managedFile.metadata,
-            deviceName: 'Merged JWL - Client Processed',
-            creationDate: new Date().toISOString(),
-          };
-        }
-
-        // Process each enabled data type
-        for (const dataType of managedFile.dataTypes) {
-          if (!dataType.enabled) {continue;}
-
-          const dbFile = fileZip.file('userData.db');
-          if (!dbFile) {continue;}
-
-          // Note: This is a simplified fallback - the Web Worker implementation
-          // provides full SQLite merging using sql.js
-          console.warn(`Processing ${dataType.name} from ${managedFile.file.name} (simplified fallback)`);
-        }
+        return {
+          success: true,
+          blob: result.blob,
+          fileName: result.fileName,
+        };
+      } catch (error) {
+        console.error('Web Worker merge failed:', error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Merge failed in the background worker',
+        };
+      } finally {
+        workerClient.terminate();
       }
-
-      onProgress?.('Creating merged file...', 85);
-
-      // Create merged manifest
-      const mergedManifest = {
-        name: 'merged-library',
-        creationDate: mergedMetadata?.creationDate || new Date().toISOString(),
-        version: 1,
-        type: 0,
-        userDataBackup: {
-          lastModifiedDate: new Date().toISOString(),
-          deviceName: mergedMetadata?.deviceName || 'Merged JWL - Fallback',
-          hash: `fallback-merged-${Date.now()}`,
-          schemaVersion: 13
-        }
-      };
-
-      // Add manifest to ZIP
-      mergedZip.file('manifest.json', JSON.stringify(mergedManifest, null, 2));
-
-      // Create placeholder userData.db (in real implementation, this would be the merged SQLite DB)
-      const placeholderDb = new Uint8Array(1024); // Placeholder binary data
-      mergedZip.file('userData.db', placeholderDb);
-
-      onProgress?.('Finalizing...', 95);
-
-      // Generate the merged file
-      const blob = await mergedZip.generateAsync({ type: 'blob' });
-      const fileName = `merged-library-${new Date().toISOString().split('T')[0]}.jwlibrary`;
-
-      onProgress?.('Complete!', 100);
-
-      return {
-        success: true,
-        blob,
-        fileName,
-      };
-
     } catch (error) {
       console.error('Merge error:', error);
       return {
