@@ -1,5 +1,3 @@
-'use client';
-
 import { CheckCircle, XCircle, Clock, Loader2, Download, AlertTriangle } from 'lucide-react';
 import { useState, useEffect } from 'react';
 

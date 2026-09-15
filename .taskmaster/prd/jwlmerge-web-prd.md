@@ -18,15 +18,16 @@ Create a zero-friction web tool that allows JW Library users to merge their back
 ## Technical Architecture
 
 ### Frontend Stack
-- **Framework**: Next.js 14+ with App Router
+- **Build tool**: Vite (React single-page app; no framework runtime)
 - **UI Library**: Tailwind CSS + shadcn/ui components
 - **State Management**: Zustand for complex state, React Context for simple state
 - **File Handling**: react-dropzone for drag-and-drop
-- **Analytics**: Vercel Analytics + Web Vitals
+- **Analytics**: none currently (Cloudflare Web Analytics is available if wanted)
 
 ### Backend Stack
-None. The application is served as static assets. There are no API routes, no
-serverless functions, no database and no file storage.
+None. The application is served as static assets from Cloudflare Workers.
+There are no API routes, no serverless functions, no database and no file
+storage — `wrangler.jsonc` declares an assets directory and nothing else.
 
 ### Architecture Decisions
 
@@ -168,7 +169,7 @@ browser's memory until the user saves it.
 
 ## Analytics & Metrics
 
-### Key Metrics (Vercel Analytics)
+### Key Metrics (if analytics is added)
 1. **Usage Metrics**
    - Daily active users
    - Files processed per day

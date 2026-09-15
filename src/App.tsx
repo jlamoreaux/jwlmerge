@@ -1,5 +1,3 @@
-'use client';
-
 import { useState, useCallback } from 'react';
 
 import type { ManagedFile, JWLDataType } from '@/lib/types/file-management';
@@ -13,7 +11,7 @@ import { FileUploadZone } from '@/components/upload/file-upload-zone';
 import { DEFAULT_JWL_DATA_TYPES } from '@/lib/types/file-management';
 import { generateUUID } from '@/lib/utils/uuid';
 
-export default function Home() {
+export default function App() {
   const [managedFiles, setManagedFiles] = useState<ManagedFile[]>([]);
   const [isMergePanelOpen, setIsMergePanelOpen] = useState(false);
 

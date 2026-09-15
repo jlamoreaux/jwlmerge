@@ -3,7 +3,6 @@ import tseslint from '@typescript-eslint/eslint-plugin';
 import tsparser from '@typescript-eslint/parser';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
-import next from '@next/eslint-plugin-next';
 import importPlugin from 'eslint-plugin-import';
 
 export default [
@@ -11,15 +10,15 @@ export default [
   // Global ignores (applies to all configs)
   {
     ignores: [
-      '.next/**',
+      'dist/**',
+      '.wrangler/**',
+      'public/vendor/**',
       'node_modules/**',
       '*.config.js',
       '*.config.mjs',
       '*.config.ts',
       'dist/**',
       'build/**',
-      '.vercel/**',
-      'next-env.d.ts',
       'tsconfig.tsbuildinfo',
       'public/workers/**',
     ],
@@ -30,7 +29,6 @@ export default [
       '@typescript-eslint': tseslint,
       react: react,
       'react-hooks': reactHooks,
-      '@next/next': next,
       import: importPlugin,
     },
     languageOptions: {
@@ -119,11 +117,6 @@ export default [
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
 
-      // Next.js (compatible rules only for ESLint 9)
-      '@next/next/no-html-link-for-pages': 'error',
-      '@next/next/no-img-element': 'error',
-      '@next/next/no-sync-scripts': 'error',
-      '@next/next/no-title-in-document-head': 'error',
 
       // General
       'no-unused-vars': 'off', // Turned off in favor of @typescript-eslint/no-unused-vars
@@ -174,6 +167,21 @@ export default [
     files: ['**/*.test.{ts,tsx}', '**/*.spec.{ts,tsx}'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      'no-console': 'off',
+    },
+  },
+  {
+    // Build scripts run under Node, not in the browser, and report progress.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+    rules: {
       'no-console': 'off',
     },
   },
