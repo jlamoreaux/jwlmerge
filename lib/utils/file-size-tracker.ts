@@ -82,69 +82,34 @@ export function getSizeCategory(sizeBytes: number): 'small' | 'medium' | 'large'
 }
 
 /**
- * Get estimated processing time based on file size and processing mode
+ * Rough time estimate for merging this much data in the browser.
  */
-export function getEstimatedProcessingTime(
-  sizeBytes: number,
-  mode: 'client' | 'server'
-): {
+export function getEstimatedProcessingTime(sizeBytes: number): {
   estimate: string;
   confidence: 'low' | 'medium' | 'high';
 } {
   const sizeMB = sizeBytes / (1024 * 1024);
 
-  if (mode === 'server') {
-    // Server processing is generally faster and more predictable
-    if (sizeMB < 10) {
-      return { estimate: '5-15 seconds', confidence: 'high' };
-    } else if (sizeMB < 25) {
-      return { estimate: '15-30 seconds', confidence: 'high' };
-    } else if (sizeMB < 50) {
-      return { estimate: '30-60 seconds', confidence: 'medium' };
-    } else {
-      return { estimate: '1-3 minutes', confidence: 'medium' };
-    }
-  } else {
-    // Client processing varies significantly by device
-    if (sizeMB < 5) {
-      return { estimate: '10-30 seconds', confidence: 'medium' };
-    } else if (sizeMB < 15) {
-      return { estimate: '30-90 seconds', confidence: 'medium' };
-    } else if (sizeMB < 30) {
-      return { estimate: '1-5 minutes', confidence: 'low' };
-    } else {
-      return { estimate: '2-10+ minutes', confidence: 'low' };
-    }
-  }
+  if (sizeMB < 5) {return { estimate: '10-30 seconds', confidence: 'medium' };}
+  if (sizeMB < 15) {return { estimate: '30-90 seconds', confidence: 'medium' };}
+  if (sizeMB < 30) {return { estimate: '1-5 minutes', confidence: 'low' };}
+
+  return { estimate: '2-10+ minutes', confidence: 'low' };
 }
 
 /**
- * Check if files exceed recommended limits for different processing modes
+ * Where this much data sits against the limits of browser-based merging.
  */
 export function checkSizeLimits(sizeBytes: number): {
-  clientSide: {
-    safe: boolean;
-    warning: boolean;
-    critical: boolean;
-  };
-  serverSide: {
-    safe: boolean;
-    warning: boolean;
-    critical: boolean;
-  };
+  safe: boolean;
+  warning: boolean;
+  critical: boolean;
 } {
   const sizeMB = sizeBytes / (1024 * 1024);
 
   return {
-    clientSide: {
-      safe: sizeMB <= 15,
-      warning: sizeMB > 15 && sizeMB <= 35,
-      critical: sizeMB > 35,
-    },
-    serverSide: {
-      safe: sizeMB <= 75,
-      warning: sizeMB > 75 && sizeMB <= 150,
-      critical: sizeMB > 150,
-    },
+    safe: sizeMB <= 15,
+    warning: sizeMB > 15 && sizeMB <= 35,
+    critical: sizeMB > 35,
   };
 }

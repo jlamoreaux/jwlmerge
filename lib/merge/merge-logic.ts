@@ -1,7 +1,4 @@
-// import { startMerge, uploadFile, getDownloadUrl, pollMergeStatus } from '@/lib/api/client';
-
 import type { ManagedFile } from '@/lib/types/file-management';
-// import type { CreateMergeRequest, MergeConfig } from '@/lib/types/database';
 
 import { detectDeviceCapabilities } from '@/lib/utils/device-capabilities';
 import { MergeWorkerClient, isWebWorkerSupported, canHandleClientMerge } from '@/lib/workers/merge-worker-client';
@@ -10,48 +7,27 @@ export interface MergeResult {
   success: boolean;
   blob?: Blob;
   fileName?: string;
-  downloadUrl?: string;
-  mergeId?: string;
   error?: string;
 }
 
 export interface MergeOptions {
-  useServerSide?: boolean;
   onProgress?: (message: string, progress?: number) => void;
 }
 
 export class JWLMerger {
   /**
-   * Merge multiple JWL files into a single file
+   * Merge multiple JWL files into a single file.
+   *
+   * Everything happens in the browser: the backups are never uploaded, and
+   * there is no server-side path. That is the app's privacy guarantee, not an
+   * implementation detail.
    */
   static async mergeFiles(
     managedFiles: ManagedFile[],
     options: MergeOptions = {}
   ): Promise<MergeResult> {
-    const { useServerSide = false, onProgress } = options;
+    const { onProgress } = options;
 
-    if (useServerSide) {
-      // Server-side processing will be implemented in future tasks
-      console.warn('Server-side processing not yet fully implemented. Falling back to client-side.');
-      return this.mergeFilesClientSide(managedFiles, onProgress);
-    } else {
-      return this.mergeFilesClientSide(managedFiles, onProgress);
-    }
-  }
-
-  /**
-   * Merge files using server-side processing
-   * Currently disabled for privacy reasons - will be implemented in Task 11
-   */
-  // TODO: Implement server-side processing in Task 11
-
-  /**
-   * Merge files using client-side processing with Web Workers
-   */
-  private static async mergeFilesClientSide(
-    managedFiles: ManagedFile[],
-    onProgress?: (message: string, progress?: number) => void
-  ): Promise<MergeResult> {
     try {
       // Validate input
       if (managedFiles.length < 2) {
@@ -132,37 +108,19 @@ export class JWLMerger {
   }
 
   /**
-   * Download a file (blob or URL)
+   * Save the merged file. It only ever exists as an in-memory Blob - there is
+   * no download URL, because nothing was uploaded anywhere.
    */
-  static downloadFile(source: Blob | string, fileName: string): void {
+  static downloadFile(blob: Blob, fileName: string): void {
     if (typeof window === 'undefined') {return;}
 
-    if (typeof source === 'string') {
-      // Download from URL
-      const a = window.document.createElement('a');
-      a.href = source;
-      a.download = fileName;
-      a.target = '_blank';
-      window.document.body.appendChild(a);
-      a.click();
-      window.document.body.removeChild(a);
-    } else {
-      // Download blob
-      const url = URL.createObjectURL(source);
-      const a = window.document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      window.document.body.appendChild(a);
-      a.click();
-      window.document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
-  }
-
-  /**
-   * @deprecated Use downloadFile instead
-   */
-  static downloadBlob(blob: Blob, fileName: string): void {
-    this.downloadFile(blob, fileName);
+    const url = URL.createObjectURL(blob);
+    const a = window.document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    window.document.body.appendChild(a);
+    a.click();
+    window.document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 }
