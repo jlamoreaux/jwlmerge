@@ -9,8 +9,8 @@
 # testing
 /coverage
 
-# next.js
-/.next/
+# build output
+/dist/
 /out/
 
 # production
@@ -34,7 +34,6 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
 
 # IDE
 .idea
@@ -74,3 +73,10 @@ node_modules/
 # Task files
 # tasks.json
 # tasks/ 
+
+# cloudflare
+.wrangler
+.dev.vars*
+
+# generated: copied from node_modules by scripts/copy-vendor.mjs
+/public/vendor/

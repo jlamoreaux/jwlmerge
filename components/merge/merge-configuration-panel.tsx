@@ -1,5 +1,3 @@
-'use client';
-
 import { X, Download, Settings2, Lock } from 'lucide-react';
 import { useState, useEffect } from 'react';
 

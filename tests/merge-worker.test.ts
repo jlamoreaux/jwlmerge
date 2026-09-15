@@ -155,8 +155,10 @@ type WorkerMessage = { type: string; error?: string; result?: { blob: Blob; vali
 
 /**
  * Run the shipped worker source in a simulated DedicatedWorkerGlobalScope.
- * importScripts is stubbed because the libraries it fetches from the CDN are
- * the same ones installed locally.
+ *
+ * importScripts is stubbed and JSZip/sql.js are injected directly, because the
+ * worker loads them from /vendor at runtime — served paths that mean nothing
+ * on a filesystem. sql.js's locateFile is rewritten for the same reason.
  */
 async function runWorker(
   files: Array<{ name: string; data: ArrayBuffer; dataTypes: Record<string, boolean> }>,
@@ -188,10 +190,7 @@ async function runWorker(
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
 
-  const source = readFileSync(WORKER_PATH, 'utf8').replace(
-    /https:\/\/unpkg\.com\/sql\.js@1\.13\.0\/dist\//g,
-    SQL_DIST
-  );
+  const source = readFileSync(WORKER_PATH, 'utf8').replace(/`\/vendor\/\$\{file\}`/g, `'${SQL_DIST}' + file`);
   vm.runInContext(source, sandbox, { filename: 'merge-worker.js' });
 
   const onmessage = sandbox.self as { onmessage: (e: { data: unknown }) => Promise<void> };

@@ -33,19 +33,23 @@ The work happens in a Worker so that a large merge does not freeze the page.
 
 ## Tech Stack
 
-- **Framework**: Next.js 15 with App Router (static, no server routes)
+- **Build tool**: Vite (React SPA — no framework runtime, no server)
 - **Language**: TypeScript (strict mode)
 - **Styling**: Tailwind CSS + shadcn/ui
 - **Merge engine**: sql.js (SQLite via WebAssembly) + JSZip, in a Web Worker
-- **Deployment**: Vercel
+- **Hosting**: Cloudflare Workers static assets
 - **Package Manager**: Bun
+
+Everything the app needs is served from its own origin. sql.js, JSZip and the
+Inter font are all bundled or vendored at build time, so a merge works offline
+and is not broken by a blocked CDN or a strict Content-Security-Policy.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Bun (latest version)
-- Node.js 18+ (for compatibility)
+- Node.js 18+ (for the build scripts)
 
 ### Installation
 
@@ -90,9 +94,11 @@ bun start
 
 ```
 jwlmerge-web/
-├── app/                        # Next.js app directory
-│   ├── layout.tsx
-│   └── page.tsx                # The whole UI is one page
+├── index.html                  # Page shell; holds the no-JS fallback copy
+├── src/
+│   ├── main.tsx                # React entry point
+│   ├── App.tsx                 # The whole UI is one page
+│   └── globals.css
 ├── components/
 │   ├── ui/                     # shadcn/ui primitives
 │   ├── upload/                 # File picker and metadata display
@@ -105,10 +111,36 @@ jwlmerge-web/
 │   ├── types/                  # Shared TypeScript types
 │   └── utils/                  # Device capability and file size helpers
 ├── public/
+│   ├── favicon.svg
+│   ├── vendor/                 # generated: sql.js + JSZip, copied at build time
 │   └── workers/
 │       └── merge-worker.js     # The merge engine (SQLite + ZIP)
+├── scripts/
+│   └── copy-vendor.mjs         # Populates public/vendor/ from node_modules
+├── wrangler.jsonc              # Cloudflare Workers static-asset config
+├── vite.config.ts
 └── tests/                      # Bun tests, including end-to-end merge tests
 ```
+
+## Deployment
+
+The app is hosted on **Cloudflare Workers** as static assets. There is no
+Worker script — `wrangler.jsonc` declares only an `assets` directory, and
+Cloudflare serves the built files from the edge. `not_found_handling` is set to
+`single-page-application` so refreshes and deep links reach the app rather than
+a 404.
+
+```bash
+# Build and deploy
+bun run deploy
+
+# Build and serve the Worker locally, exactly as Cloudflare will
+bun run cf-preview
+```
+
+`bun run deploy` runs the build first, so `dist/` is always current. Deploying
+needs a Cloudflare account with Workers enabled; `wrangler login` once, then
+the command above.
 
 ## Coding Standards
 

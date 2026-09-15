@@ -4,10 +4,11 @@
  * Version: 3.0 - Source-scoped ID remapping, schema-faithful target database
  */
 
-// Import JSZip for ZIP operations
-importScripts('https://unpkg.com/jszip@3.10.1/dist/jszip.min.js');
-// Import sql.js for SQLite operations
-importScripts('https://unpkg.com/sql.js@1.13.0/dist/sql-wasm.js');
+// JSZip and sql.js are copied into /vendor at build time by
+// scripts/copy-vendor.mjs. Serving them from the same origin means a merge
+// works offline and is not broken by a blocked CDN or a strict CSP.
+importScripts('/vendor/jszip.min.js');
+importScripts('/vendor/sql-wasm.js');
 
 let sqlInitialized = false;
 let SQL = null;
@@ -17,7 +18,7 @@ async function initSQL() {
   if (sqlInitialized) return SQL;
 
   SQL = await initSqlJs({
-    locateFile: file => `https://unpkg.com/sql.js@1.13.0/dist/${file}`,
+    locateFile: file => `/vendor/${file}`,
   });
   sqlInitialized = true;
   return SQL;

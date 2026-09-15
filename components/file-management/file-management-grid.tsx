@@ -1,5 +1,3 @@
-'use client';
-
 import { FileManagementCard } from './file-management-card';
 
 import type { ManagedFile } from '@/lib/types/file-management';

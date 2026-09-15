@@ -1,5 +1,3 @@
-'use client';
-
 import { Upload, FileIcon, X, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useDropzone, type FileRejection } from 'react-dropzone';

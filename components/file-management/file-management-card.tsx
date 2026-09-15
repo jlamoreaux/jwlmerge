@@ -1,5 +1,3 @@
-'use client';
-
 import { Smartphone, Calendar, HardDrive, X, Settings } from 'lucide-react';
 import { useState } from 'react';
 

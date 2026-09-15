@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jwlmerge",
+  "compatibility_date": "2026-09-15",
+
+  // The app is static: there is no Worker script, so no "main" entry point.
+  // Cloudflare serves the built assets directly from the edge.
+  "assets": {
+    "directory": "./dist",
+    // Serve index.html for any path that is not a built file, so deep links
+    // and refreshes reach the app rather than a 404.
+    "not_found_handling": "single-page-application"
+  }
+}

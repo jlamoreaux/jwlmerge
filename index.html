@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>JWL Merge — Merge JW Library backup files in your browser</title>
+    <meta
+      name="description"
+      content="Merge multiple JW Library (.jwlibrary) backup files into one. Notes, bookmarks, highlighting and tags are combined entirely in your browser — your files are never uploaded."
+    />
+    <link rel="canonical" href="https://jwlmerge.com/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="JWL Merge" />
+    <meta
+      property="og:description"
+      content="Merge JW Library backup files in your browser. Nothing is uploaded."
+    />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <!--
+      The app renders into #root. The copy below is what a crawler or a visitor
+      with JavaScript disabled sees, and it is replaced as soon as React mounts.
+      A Next.js build used to prerender this; in a single-page app it has to be
+      written here explicitly.
+    -->
+    <div id="root">
+      <main style="max-width: 44rem; margin: 0 auto; padding: 4rem 1.5rem; font-family: system-ui, sans-serif">
+        <h1>JWL Merge</h1>
+        <p>
+          Merge multiple JW Library backup files (<code>.jwlibrary</code>) into one.
+          Notes, bookmarks, highlighting, tags and input fields are combined, and
+          duplicates are reconciled rather than doubled up.
+        </p>
+        <p>
+          Everything runs in your browser. Your backup files are never uploaded
+          anywhere, so there is nothing stored and nothing to sign in to.
+        </p>
+        <p><strong>JavaScript is required to merge files.</strong></p>
+      </main>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

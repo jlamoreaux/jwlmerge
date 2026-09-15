@@ -1,5 +1,4 @@
 import { Shield, Lock, Eye } from 'lucide-react';
-import Link from 'next/link';
 
 import { Card, CardContent } from '@/components/ui/card';
 
@@ -61,14 +60,14 @@ export function PrivacyStatement() {
             source. You can review the code and verify our privacy claims at any
             time.
             <br />
-            <Link
+            <a
               className="hover:underline"
               href="https://github.com/jlamoreaux/jwlmerge"
               target="_blank"
               rel="noopener noreferrer"
             >
               View on GitHub
-            </Link>
+            </a>
           </p>
         </div>
       </CardContent>
