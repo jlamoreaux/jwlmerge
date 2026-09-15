@@ -101,6 +101,7 @@ type SqlDatabase = {
 };
 
 let sqlPromise: Promise<{ Database: new (data?: Uint8Array) => SqlDatabase }> | null = null;
+/** Initialise sql.js once and share it; loading the WASM per test is slow. */
 function getSql() {
   if (!sqlPromise) {
     sqlPromise = (initSqlJs as (config: object) => Promise<never>)({
@@ -282,6 +283,7 @@ const DEVICE_B = [
   'INSERT INTO IndependentMedia VALUES (1,\'clip.mp4\',\'media/clip.mp4\',\'video/mp4\',\'hashB\')',
 ];
 
+/** The two overlapping backups most tests merge. */
 async function twoDevices() {
   return [
     { name: 'deviceA.jwlibrary', data: await buildBackup({ deviceName: 'Device A', statements: DEVICE_A }) },
@@ -418,11 +420,11 @@ describe('merge worker: unique-constraint clashes', () => {
     const third = await buildBackup({
       deviceName: 'Device C',
       statements: [
-        `INSERT INTO LastModified VALUES ('2026-09-06T12:00:00Z')`,
+        'INSERT INTO LastModified VALUES (\'2026-09-06T12:00:00Z\')',
         `INSERT INTO Location (LocationId,BookNumber,ChapterNumber,DocumentId,Track,IssueTagNumber,KeySymbol,MepsLanguage,Type,Title)
          VALUES (1,41,2,NULL,NULL,0,'nwtsty',0,0,'Mark 2'),
                 (2,NULL,NULL,1102024050,NULL,20240200,'w',0,0,'Watchtower 2024 No.2')`,
-        `INSERT INTO Bookmark VALUES (1,1,2,0,'Mark 2','A different place',0,NULL)`,
+        'INSERT INTO Bookmark VALUES (1,1,2,0,\'Mark 2\',\'A different place\',0,NULL)',
       ],
     });
 

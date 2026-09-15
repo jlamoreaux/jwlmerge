@@ -94,8 +94,11 @@ export class MergeWorkerClient {
           );
         };
 
-        // Prepare files for worker
-        void this.prepareAndSendFiles(managedFiles);
+        // Reading the files can fail (a file moved or revoked since it was
+        // picked). Discarding this promise would leave the rejection unhandled
+        // and this one pending forever, which is the spinner-that-never-ends
+        // the worker's own error path was fixed to avoid.
+        this.prepareAndSendFiles(managedFiles).catch(reject);
       } catch (error) {
         this.cleanup();
         reject(error);
@@ -169,8 +172,14 @@ export class MergeWorkerClient {
         globalDataTypes,
       };
 
-      // Send to worker
-      this.worker?.postMessage({
+      // Send to worker. Optional-chaining a terminated worker here would drop
+      // the request silently and leave the caller waiting on a merge that was
+      // never started.
+      if (!this.worker) {
+        throw new Error('Merge was cancelled before the files could be sent to the worker');
+      }
+
+      this.worker.postMessage({
         type: 'merge',
         files: config.files,
         mergeConfig: { globalDataTypes: config.globalDataTypes },
@@ -184,12 +193,15 @@ export class MergeWorkerClient {
   }
 
   /**
-   * Terminate worker and cleanup
+   * Stop the merge and release the worker. Safe to call more than once, and
+   * safe to call while a merge is in flight - the pending mergeFiles() promise
+   * rejects rather than hanging.
    */
   terminate() {
     this.cleanup();
   }
 
+  /** Terminate the worker if one is running, and forget it. */
   private cleanup() {
     if (this.worker) {
       this.worker.terminate();
