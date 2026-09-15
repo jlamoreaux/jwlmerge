@@ -1,9 +1,12 @@
 /**
- * Merge orchestrator that handles intelligent processing mode selection
- * and fallback mechanisms for JWL file merging
+ * Merge orchestrator.
+ *
+ * Merging runs entirely in the browser. This wraps JWLMerger with the
+ * device-capability checks and timing estimates the UI needs, and reports how
+ * long the whole run took.
  */
 
-import type { MergeResult, MergeOptions } from '@/lib/merge/merge-logic';
+import type { MergeResult } from '@/lib/merge/merge-logic';
 import type { ManagedFile } from '@/lib/types/file-management';
 
 import { JWLMerger } from '@/lib/merge/merge-logic';
@@ -12,143 +15,61 @@ import { calculateFileSizes } from '@/lib/utils/file-size-tracker';
 import { canHandleClientMerge } from '@/lib/workers/merge-worker-client';
 
 export interface MergeOrchestrationOptions {
-  preferredMode?: 'client' | 'server' | 'auto';
-  allowFallback?: boolean;
   onProgress?: (message: string, progress?: number) => void;
-  onModeChange?: (newMode: 'client' | 'server', reason: string) => void;
 }
 
 export interface MergeOrchestrationResult extends MergeResult {
-  processingMode: 'client' | 'server';
-  fallbackOccurred: boolean;
   processingTime?: number;
   deviceCapabilities?: ReturnType<typeof detectDeviceCapabilities>;
 }
 
 export class MergeOrchestrator {
   /**
-   * Orchestrate the merge process with intelligent mode selection and fallback
+   * Run a merge, checking first that this device can handle the files.
    */
   static async orchestrateMerge(
     managedFiles: ManagedFile[],
     options: MergeOrchestrationOptions = {}
   ): Promise<MergeOrchestrationResult> {
-    const {
-      preferredMode = 'auto',
-      allowFallback = true,
-      onProgress,
-      onModeChange
-    } = options;
-
+    const { onProgress } = options;
     const startTime = Date.now();
-    let fallbackOccurred = false;
-    let finalMode: 'client' | 'server' = 'client';
 
     try {
-      // Get device capabilities and file info
       const deviceCapabilities = detectDeviceCapabilities();
-      const fileSizeInfo = calculateFileSizes(managedFiles);
 
-      onProgress?.('Analyzing device capabilities and file sizes...', 5);
+      onProgress?.('Checking device capabilities...', 5);
 
-      // Determine processing mode
-      finalMode = this.determineProcessingMode(
-        preferredMode,
-        fileSizeInfo.selectedBytes,
-        deviceCapabilities
-      );
-
-      onProgress?.(`Selected ${finalMode}-side processing`, 10);
-
-      // Attempt primary processing mode
-      let result = await this.attemptMerge(managedFiles, finalMode, onProgress);
-
-      // Handle fallback if primary mode failed
-      if (!result.success && allowFallback) {
-        const fallbackMode = finalMode === 'client' ? 'server' : 'client';
-
-        onProgress?.(`${finalMode}-side processing failed, trying ${fallbackMode}-side...`, 15);
-        onModeChange?.(fallbackMode, `${finalMode}-side processing failed`);
-
-        fallbackOccurred = true;
-        finalMode = fallbackMode;
-
-        result = await this.attemptMerge(managedFiles, fallbackMode, onProgress);
+      const assessment = this.canProcessClientSide(managedFiles);
+      if (!assessment.feasible) {
+        return {
+          success: false,
+          error: assessment.reason,
+          processingTime: Date.now() - startTime,
+          deviceCapabilities,
+        };
       }
 
-      const processingTime = Date.now() - startTime;
+      const result = await JWLMerger.mergeFiles(managedFiles, {
+        ...(onProgress && { onProgress }),
+      });
 
       return {
         ...result,
-        processingMode: finalMode,
-        fallbackOccurred,
-        processingTime,
+        processingTime: Date.now() - startTime,
         deviceCapabilities,
       };
-
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown orchestration error',
-        processingMode: finalMode,
-        fallbackOccurred,
         processingTime: Date.now() - startTime,
       };
     }
   }
 
   /**
-   * Determine the best processing mode based on preferences and capabilities
-   */
-  private static determineProcessingMode(
-    preferredMode: 'client' | 'server' | 'auto',
-    totalSize: number,
-    deviceCapabilities: ReturnType<typeof detectDeviceCapabilities>
-  ): 'client' | 'server' {
-    if (preferredMode !== 'auto') {
-      return preferredMode;
-    }
-
-    // Get intelligent recommendation
-    const recommendation = getProcessingRecommendation(totalSize, deviceCapabilities);
-    return recommendation.mode;
-  }
-
-  /**
-   * Attempt merge with specified processing mode
-   */
-  private static async attemptMerge(
-    managedFiles: ManagedFile[],
-    mode: 'client' | 'server',
-    onProgress?: (message: string, progress?: number) => void
-  ): Promise<MergeResult> {
-    const mergeOptions: MergeOptions = {
-      useServerSide: mode === 'server',
-      ...(onProgress && { onProgress }),
-    };
-
-    if (mode === 'client') {
-      // Additional client-side validation
-      const totalSize = managedFiles.reduce((sum, file) => sum + file.file.size, 0);
-      const deviceCapabilities = detectDeviceCapabilities();
-      const canHandle = canHandleClientMerge(
-        totalSize,
-        deviceCapabilities.memory !== 'unknown' ? deviceCapabilities.memory : undefined
-      );
-
-      if (!canHandle.canHandle) {
-        return {
-          success: false,
-          error: `Client-side processing not suitable: ${canHandle.reason}`,
-        };
-      }
-    }
-
-    return JWLMerger.mergeFiles(managedFiles, mergeOptions);
-  }
-
-  /**
-   * Get processing recommendation without starting merge
+   * Device capabilities, file sizes and a suitability assessment, for the UI
+   * to show before a merge starts.
    */
   static getRecommendation(managedFiles: ManagedFile[]) {
     const deviceCapabilities = detectDeviceCapabilities();
@@ -167,7 +88,7 @@ export class MergeOrchestrator {
   }
 
   /**
-   * Check if client-side processing is feasible
+   * Check whether this device can handle merging these files in the browser.
    */
   static canProcessClientSide(managedFiles: ManagedFile[]): {
     feasible: boolean;
@@ -185,67 +106,43 @@ export class MergeOrchestrator {
     return {
       feasible: clientAssessment.canHandle,
       reason: clientAssessment.reason,
-      confidence: 'medium', // Could be enhanced with more sophisticated logic
+      confidence: 'medium',
     };
   }
 
   /**
-   * Estimate processing time for given mode
+   * Rough time estimate, scaled by how capable the device is. Browser
+   * processing varies a lot between devices, hence the wide ranges.
    */
-  static estimateProcessingTime(
-    managedFiles: ManagedFile[],
-    mode: 'client' | 'server'
-  ): {
+  static estimateProcessingTime(managedFiles: ManagedFile[]): {
     estimate: string;
     confidence: 'low' | 'medium' | 'high';
   } {
     const totalSize = managedFiles.reduce((sum, file) => sum + file.file.size, 0);
     const sizeMB = totalSize / (1024 * 1024);
+    const deviceCapabilities = detectDeviceCapabilities();
 
-    if (mode === 'server') {
-      // Server processing estimates
-      if (sizeMB < 10) {
-        return { estimate: '5-15 seconds', confidence: 'high' };
-      } else if (sizeMB < 25) {
-        return { estimate: '15-30 seconds', confidence: 'high' };
-      } else if (sizeMB < 50) {
-        return { estimate: '30-60 seconds', confidence: 'medium' };
-      } else {
-        return { estimate: '1-3 minutes', confidence: 'medium' };
-      }
+    let multiplier: number;
+    if (deviceCapabilities.score === 'low') {
+      multiplier = 3;
+    } else if (deviceCapabilities.score === 'medium') {
+      multiplier = 2;
     } else {
-      // Client processing estimates (more variable)
-      const deviceCapabilities = detectDeviceCapabilities();
-      let baseMultiplier: number;
-      if (deviceCapabilities.score === 'low') {
-        baseMultiplier = 3;
-      } else if (deviceCapabilities.score === 'medium') {
-        baseMultiplier = 2;
-      } else {
-        baseMultiplier = 1;
-      }
-
-      if (sizeMB < 5) {
-        return {
-          estimate: `${Math.round(10 * baseMultiplier)}-${Math.round(30 * baseMultiplier)} seconds`,
-          confidence: 'medium'
-        };
-      } else if (sizeMB < 15) {
-        return {
-          estimate: `${Math.round(30 * baseMultiplier)}-${Math.round(90 * baseMultiplier)} seconds`,
-          confidence: 'medium'
-        };
-      } else if (sizeMB < 30) {
-        return {
-          estimate: `${Math.round(60 * baseMultiplier)}-${Math.round(300 * baseMultiplier)} seconds`,
-          confidence: 'low'
-        };
-      } else {
-        return {
-          estimate: `${Math.round(120 * baseMultiplier)}+ seconds`,
-          confidence: 'low'
-        };
-      }
+      multiplier = 1;
     }
+
+    const range = (low: number, high: number, confidence: 'low' | 'medium' | 'high') => ({
+      estimate: `${Math.round(low * multiplier)}-${Math.round(high * multiplier)} seconds`,
+      confidence,
+    });
+
+    if (sizeMB < 5) {return range(10, 30, 'medium');}
+    if (sizeMB < 15) {return range(30, 90, 'medium');}
+    if (sizeMB < 30) {return range(60, 300, 'low');}
+
+    return {
+      estimate: `${Math.round(120 * multiplier)}+ seconds`,
+      confidence: 'low',
+    };
   }
 }

@@ -1,5 +1,9 @@
 /**
- * Device capability scoring for intelligent processing mode selection
+ * Device capability scoring.
+ *
+ * Merging runs in the browser, so how much memory and CPU the device has
+ * decides whether a given set of backups is realistic to merge and how long it
+ * will take. This is used to warn the user, never to route work elsewhere.
  */
 
 export interface DeviceCapabilities {
@@ -20,7 +24,7 @@ export interface DeviceCapabilities {
  */
 export function detectDeviceCapabilities(): DeviceCapabilities {
   if (typeof window === 'undefined') {
-    // Server-side fallback
+    // Prerender / non-browser fallback: assume a mid-range device.
     return {
       score: 'medium',
       memory: 'unknown',
@@ -29,7 +33,7 @@ export function detectDeviceCapabilities(): DeviceCapabilities {
       isMobile: false,
       details: {
         effectiveCpuCores: 4,
-        userAgent: 'server',
+        userAgent: 'unknown',
       },
     };
   }
@@ -160,13 +164,16 @@ export function canHandleClientSideProcessing(
 }
 
 /**
- * Get processing mode recommendation based on file size and device capabilities
+ * Assess whether these files are a comfortable fit for this device.
+ *
+ * Merging only ever happens in the browser, so this is advice about what to
+ * expect - not a choice between processing locations.
  */
 export function getProcessingRecommendation(
   totalFileSizeBytes: number,
   capabilities?: DeviceCapabilities
 ): {
-  mode: 'client' | 'server';
+  suitability: 'comfortable' | 'slow' | 'risky';
   confidence: 'low' | 'medium' | 'high';
   reason: string;
   warning?: string;
@@ -175,49 +182,44 @@ export function getProcessingRecommendation(
   const clientAssessment = canHandleClientSideProcessing(caps, totalFileSizeBytes);
   const totalSizeMB = totalFileSizeBytes / (1024 * 1024);
 
-  // Always recommend server for very large files
   if (totalSizeMB > 75) {
     return {
-      mode: 'server',
+      suitability: 'risky',
       confidence: 'high',
-      reason: `Files over 75MB (${totalSizeMB.toFixed(1)}MB) process much faster on our servers`,
-      warning: 'Large files may cause browser crashes or extremely slow processing if done client-side',
+      reason: `${totalSizeMB.toFixed(1)}MB is a lot for a browser to hold in memory at once`,
+      warning: 'Very large merges may be slow, or may run out of memory and fail',
     };
   }
 
-  // Recommend server for low-end devices with medium+ files
   if (caps.score === 'low' && totalSizeMB > 15) {
     return {
-      mode: 'server',
+      suitability: 'risky',
       confidence: 'medium',
       reason: `${totalSizeMB.toFixed(1)}MB may be too large for your device (${caps.isMobile ? 'mobile' : 'low-end'})`,
-      warning: 'Client-side processing may freeze your browser or fail',
+      warning: 'The merge may be slow, and on a low-memory device it may fail',
     };
   }
 
-  // Recommend client-side for small files or privacy-conscious users
   if (clientAssessment.canHandle && clientAssessment.confidence !== 'low') {
     return {
-      mode: 'client',
+      suitability: 'comfortable',
       confidence: clientAssessment.confidence,
-      reason: `${clientAssessment.reason} - keeps your data completely private`,
+      reason: clientAssessment.reason,
     };
   }
 
-  // Borderline cases - slight preference for server on medium+ files
   if (totalSizeMB > 25) {
     return {
-      mode: 'server',
+      suitability: 'slow',
       confidence: 'medium',
-      reason: `${totalSizeMB.toFixed(1)}MB files process significantly faster on our servers`,
-      warning: 'Client-side processing will be slower and may use significant memory',
+      reason: `${totalSizeMB.toFixed(1)}MB will take a while to process in the browser`,
+      warning: 'Expect the merge to be slow and to use significant memory',
     };
   }
 
-  // Default to client-side for privacy
   return {
-    mode: 'client',
+    suitability: 'comfortable',
     confidence: 'medium',
-    reason: 'Small files can be processed safely in your browser for maximum privacy',
+    reason: 'These files are small enough to merge quickly in your browser',
   };
 }

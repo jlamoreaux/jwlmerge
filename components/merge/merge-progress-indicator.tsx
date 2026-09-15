@@ -12,7 +12,6 @@ export interface MergeProgressState {
   status: 'idle' | 'preparing' | 'processing' | 'complete' | 'error';
   message: string;
   progress: number;
-  processingMode?: 'client' | 'server';
   error?: string;
   result?: {
     blob: Blob;
@@ -143,11 +142,9 @@ export function MergeProgressIndicator({
           )}
         </CardTitle>
 
-        {state.processingMode && (
-          <div className="text-sm text-muted-foreground">
-            Processing mode: {state.processingMode === 'client' ? 'Client-side (Private)' : 'Server-side (Fast)'}
-          </div>
-        )}
+        <div className="text-sm text-muted-foreground">
+          Merged entirely in your browser
+        </div>
       </CardHeader>
 
       <CardContent className="space-y-4">
@@ -244,12 +241,7 @@ export function MergeProgressIndicator({
             <div className="space-y-1">
               <div>Time elapsed: {formatTime(timeElapsed)}</div>
               <div>Status: {state.message}</div>
-              {state.processingMode === 'client' && (
-                <div className="text-green-700">✓ Your files remain completely private</div>
-              )}
-              {state.processingMode === 'server' && (
-                <div className="text-blue-700">⚡ Processing on optimized servers</div>
-              )}
+              <div className="text-green-700">✓ Your files never leave this device</div>
             </div>
           </div>
         )}

@@ -12,8 +12,6 @@ import type { ManagedFile } from '@/lib/types/file-management';
 
 import { JWLMerger } from '@/lib/merge/merge-logic';
 import { MergeOrchestrator } from '@/lib/merge/merge-orchestrator';
-import { detectDeviceCapabilities } from '@/lib/utils/device-capabilities';
-import { calculateFileSizes } from '@/lib/utils/file-size-tracker';
 
 interface IntelligentMergeInterfaceProps {
   managedFiles: ManagedFile[];
@@ -39,34 +37,20 @@ export function IntelligentMergeInterface({
       return;
     }
 
-    // Always use client-side processing
-
-    // Initialize progress state
     setProgressState({
       status: 'preparing',
-      message: 'Initializing secure client-side merge...',
+      message: 'Preparing merge...',
       progress: 0,
-      processingMode: 'client',
     });
 
     try {
-      // Use MergeOrchestrator for intelligent merge handling
       const result = await MergeOrchestrator.orchestrateMerge(managedFiles, {
-        preferredMode: 'client',
-        allowFallback: false, // No fallback to server
         onProgress: (message, progress) => {
           setProgressState(prev => ({
             ...prev,
             status: progress && progress >= 100 ? 'complete' : 'processing',
             message,
             progress: progress || prev.progress,
-          }));
-        },
-        onModeChange: (newMode, reason) => {
-          setProgressState(prev => ({
-            ...prev,
-            processingMode: newMode,
-            message: `Switched to ${newMode}-side processing: ${reason}`,
           }));
         },
       });
@@ -77,7 +61,6 @@ export function IntelligentMergeInterface({
           status: 'complete',
           message: 'Merge completed successfully!',
           progress: 100,
-          processingMode: result.processingMode,
           result: {
             blob: result.blob,
             fileName: result.fileName,
@@ -99,7 +82,6 @@ export function IntelligentMergeInterface({
           status: 'error',
           message: 'Merge failed',
           progress: 0,
-          processingMode: result.processingMode,
           error: result.error || 'Unknown error occurred',
         });
 
@@ -113,7 +95,6 @@ export function IntelligentMergeInterface({
         status: 'error',
         message: 'Merge failed',
         progress: 0,
-        processingMode: 'client',
         error: errorMessage,
       });
 
@@ -169,36 +150,4 @@ export function IntelligentMergeInterface({
       />
     </div>
   );
-}
-
-// Export utility function for testing the system
-export function testIntelligentMergeSystem(managedFiles: ManagedFile[]) {
-  const deviceCapabilities = detectDeviceCapabilities();
-  const fileSizeInfo = calculateFileSizes(managedFiles);
-  const orchestratorRecommendation =
-    MergeOrchestrator.getRecommendation(managedFiles);
-  const clientFeasibility =
-    MergeOrchestrator.canProcessClientSide(managedFiles);
-  const clientTimeEstimate = MergeOrchestrator.estimateProcessingTime(
-    managedFiles,
-    'client'
-  );
-
-  return {
-    deviceCapabilities,
-    fileSizeInfo,
-    orchestratorRecommendation,
-    clientFeasibility,
-    timeEstimates: {
-      client: clientTimeEstimate,
-    },
-    summary: {
-      recommendedMode: orchestratorRecommendation.recommendation.mode,
-      confidence: orchestratorRecommendation.recommendation.confidence,
-      reason: orchestratorRecommendation.recommendation.reason,
-      canHandleClient: clientFeasibility.feasible,
-      totalFileSize: fileSizeInfo.selectedMB,
-      deviceScore: deviceCapabilities.score,
-    },
-  };
 }

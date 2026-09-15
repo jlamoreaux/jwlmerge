@@ -1,7 +1,7 @@
 # Product Requirements Document: JWLMerge Web
 
 ## Executive Summary
-JWLMerge Web is a modern web application that brings the desktop JWLMerge functionality to the browser, enabling users to merge JW Library backup files without installing software. The application will prioritize privacy, ease of use, and performance while offering optional account features for backup history.
+JWLMerge Web is a modern web application that brings the desktop JWLMerge functionality to the browser, enabling users to merge JW Library backup files without installing software. The application prioritizes privacy, ease of use and performance. It runs entirely in the browser: there is no backend, no database and no account system, and backup files are never uploaded anywhere.
 
 ## Product Overview
 
@@ -10,10 +10,10 @@ Create a zero-friction web tool that allows JW Library users to merge their back
 
 ### Key Differentiators
 - **No Installation Required**: Works in any modern browser
-- **Privacy-First**: Client-side processing with optional cloud features
+- **Privacy-First**: Everything is processed on the user's own device; files are never uploaded
 - **Modern UX**: Simplified workflow compared to desktop version
 - **Cross-Platform**: Works on any OS including mobile devices
-- **Version History**: Optional account system for backup management
+- **No Account Needed**: Nothing to sign up for, nothing stored about the user
 
 ## Technical Architecture
 
@@ -25,34 +25,32 @@ Create a zero-friction web tool that allows JW Library users to merge their back
 - **Analytics**: Vercel Analytics + Web Vitals
 
 ### Backend Stack
-- **API Routes**: Next.js API routes for lightweight operations
-- **Serverless Functions**: Vercel Functions for heavy processing
-- **Database**: Supabase (PostgreSQL) for user accounts and metadata
-- **File Storage**: Vercel Blob Storage for temporary file processing
-- **Authentication**: Supabase Auth with magic links
+None. The application is served as static assets. There are no API routes, no
+serverless functions, no database and no file storage.
 
 ### Architecture Decisions
 
-1. **Hybrid Processing Model**
-   - Light operations (file validation, manifest reading) in browser
-   - Heavy operations (merging, database operations) in serverless functions
-   - This balances performance with browser limitations
+1. **Client-Side Only Processing**
+   - Every step runs in the browser: validation, manifest reading, and the
+     merge itself
+   - Merging happens in a Web Worker so a large merge does not freeze the page
+   - SQLite runs in the browser via sql.js (WebAssembly); ZIP handling via JSZip
 
-2. **Database Usage**
-   - Store user accounts, merge history metadata
-   - NOT storing actual backup file contents (privacy)
-   - Track: merge timestamps, file counts, data type selections
+2. **No Persistence**
+   - Nothing about the user or their files is stored anywhere
+   - This is what makes the privacy claim verifiable rather than a promise:
+     there is no server that *could* retain anything
 
 3. **File Processing Flow**
    ```
-   Browser → Upload to Blob → Serverless Processing → Download URL → Browser
+   Browser reads files → Web Worker merges → Blob → Browser saves
    ```
 
 ## Core Features
 
 ### Phase 1: MVP (Essential Features)
 
-1. **File Upload & Validation**
+1. **File Selection & Validation**
    - Drag-and-drop multiple .jwlibrary files
    - Real-time validation and error messaging
    - File size limits (100MB per file)
@@ -75,35 +73,20 @@ Create a zero-friction web tool that allows JW Library users to merge their back
 
 4. **Download Result**
    - Auto-generated filename with timestamp
-   - One-click download
-   - 24-hour temporary link
+   - One-click download (saved straight from the browser)
 
 ### Phase 2: Enhanced Features
 
-1. **User Accounts (Optional)**
-   - Magic link authentication
-   - Merge history with metadata
-   - Re-download recent merges (7 days)
-   - Usage statistics dashboard
-
-2. **Advanced Tools**
+1. **Advanced Tools**
    - Remove notes by tag
    - Remove underlining by color
    - Bible notes export (CSV/Excel)
    - Preview backup contents
 
-3. **Batch Operations**
-   - Save merge presets
+2. **Batch Operations**
+   - Save merge presets (stored locally in the browser)
    - Apply saved configurations
-   - Bulk processing queue
-
-### Phase 3: Premium Features
-
-1. **Extended Features**
-   - 30-day merge history
-   - Priority processing queue
-   - Larger file size limits (500MB)
-   - API access for automation
+   - Merge several sets in sequence
 
 ## User Interface Design
 
@@ -166,60 +149,22 @@ Create a zero-friction web tool that allows JW Library users to merge their back
 4. **Command Palette**: (Cmd+K) for power users
 5. **Dark Mode**: System preference detection
 
-## User Flows
+## User Flow
 
-### Primary Flow: Anonymous Merge
+There is one flow, and it needs no account:
+
 1. Land on homepage
 2. Drag multiple .jwlibrary files
 3. Configure merge options
 4. Click "Merge Files"
-5. Wait for processing
-6. Download merged file
+5. Wait for processing (in the browser)
+6. Save merged file
 
-### Secondary Flow: Authenticated User
-1. Click "Sign In" → Enter email
-2. Receive magic link → Authenticate
-3. Upload and merge files
-4. View in merge history
-5. Re-download from dashboard
+## Data Storage
 
-## Database Schema (Supabase)
-
-```sql
--- Users table (handled by Supabase Auth)
-
--- Merge history
-CREATE TABLE merges (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID REFERENCES auth.users(id),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  status VARCHAR(20) NOT NULL,
-  input_file_count INTEGER NOT NULL,
-  output_file_url TEXT,
-  expires_at TIMESTAMPTZ,
-  metadata JSONB
-);
-
--- Merge statistics
-CREATE TABLE merge_stats (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  merge_id UUID REFERENCES merges(id),
-  notes_count INTEGER,
-  bookmarks_count INTEGER,
-  underlines_count INTEGER,
-  tags_count INTEGER,
-  data_types_selected JSONB
-);
-
--- User preferences
-CREATE TABLE user_preferences (
-  user_id UUID PRIMARY KEY REFERENCES auth.users(id),
-  default_merge_options JSONB,
-  ui_preferences JSONB,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+None. The application has no database. Nothing about a user, their files or
+their merges is persisted anywhere — the merged file exists only in the
+browser's memory until the user saves it.
 
 ## Analytics & Metrics
 
@@ -237,7 +182,7 @@ CREATE TABLE user_preferences (
    - API response times
 
 3. **User Journey Metrics**
-   - Conversion funnel (upload → merge → download)
+   - Conversion funnel (select files → merge → save)
    - Drop-off points
    - Feature discovery rates
    - Return user percentage
@@ -245,40 +190,35 @@ CREATE TABLE user_preferences (
 ## Security & Privacy
 
 1. **Data Handling**
-   - Files processed in memory, not persisted
-   - 24-hour auto-deletion of temporary files
-   - No backup content stored in database
-   - Client-side encryption option
+   - Files are read into browser memory and never uploaded
+   - Nothing is persisted: no server, no database, no temporary storage
+   - Closing the tab discards everything
 
-2. **Authentication**
-   - Passwordless (magic links)
-   - Session management with JWT
-   - Rate limiting on all endpoints
+2. **No Accounts**
+   - There is no sign-in, no session and no user record
+   - Nothing to breach, and nothing to hand over
 
 3. **Compliance**
-   - GDPR-compliant data handling
-   - Clear privacy policy
-   - Data export capabilities
-   - Right to deletion
+   - No personal data is collected or processed, so there is nothing to
+     export or delete
+   - Clear privacy statement shown in the app
 
 ## Performance Requirements
 
 1. **Response Times**
    - Page load: < 2s (FCP)
-   - File upload: Stream with progress
+   - File reading: progress reported as each file is read
    - Merge operation: < 30s for typical files
    - Download initiation: < 1s
 
 2. **Scalability**
-   - Support 1000+ concurrent users
-   - Handle files up to 100MB (MVP)
-   - Auto-scaling serverless functions
+   - Static hosting: concurrent users cost nothing to serve
+   - Handle files up to 100MB, subject to the device's available memory
 
 ## Success Criteria
 
 1. **Adoption Metrics**
    - 1000+ merges per week within 3 months
-   - 30% user registration rate
    - 4.5+ user satisfaction score
 
 2. **Technical Metrics**
@@ -291,25 +231,18 @@ CREATE TABLE user_preferences (
 ### Phase 1: MVP (8 weeks)
 - Core merging functionality
 - Basic UI with file management
-- Anonymous usage only
 - Essential error handling
 
-### Phase 2: User Accounts (4 weeks)
-- Authentication system
-- Merge history
-- Advanced tools
+### Phase 2: Enhanced Tools (4 weeks)
+- Remove notes by tag, underlining by colour
+- Bible notes export
+- Backup content preview
 - Enhanced UI/UX
-
-### Phase 3: Premium Features (4 weeks)
-- Extended retention
-- API access
-- Batch operations
-- Advanced analytics
 
 ## Risk Mitigation
 
 1. **Large File Handling**
-   - Implement chunked uploads
+   - Warn before a merge the device may not have memory for
    - Stream processing where possible
    - Clear size limit messaging
 
