@@ -49,7 +49,12 @@ and is not broken by a blocked CDN or a strict Content-Security-Policy.
 ### Prerequisites
 
 - Bun (latest version)
-- Node.js 18+ (for the build scripts)
+- Node.js 22.12+
+
+Node 22.12 is the intersection of what the toolchain needs: Vite 8 requires
+`^20.19.0 || >=22.12.0` and Wrangler 4 requires `>=22.0.0`. Building alone works
+on Node 20.19+, but deploying does not, so the single number to install is
+22.12.
 
 ### Installation
 
