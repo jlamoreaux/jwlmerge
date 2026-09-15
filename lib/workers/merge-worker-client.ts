@@ -79,7 +79,19 @@ export class MergeWorkerClient {
 
         this.worker.onerror = error => {
           this.cleanup();
-          reject(new Error(`Worker error: ${error.message}`));
+          // A worker that fails before running any of our code usually means
+          // its scripts could not be fetched - an offline machine, a blocked
+          // CDN, or a Content-Security-Policy that disallows unpkg.com. The
+          // browser hides the detail, so say what to check.
+          reject(
+            new Error(
+              error.message
+                ? `Merge worker error: ${error.message}`
+                : 'The merge worker could not start. It loads SQLite and ZIP libraries from ' +
+                  'unpkg.com, so check your network connection, any ad/script blocker, and ' +
+                  'whether the page is allowed to load scripts from that CDN.'
+            )
+          );
         };
 
         // Prepare files for worker

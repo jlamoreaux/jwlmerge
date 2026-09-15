@@ -1,12 +1,12 @@
 /**
  * Web Worker for client-side JWL file merging
  * Runs heavy operations in background thread to avoid UI freezing
- * Version: 2.12 - Fixed global mapping creation for source-specific conflicts
+ * Version: 3.0 - Source-scoped ID remapping, schema-faithful target database
  */
 
 // Import JSZip for ZIP operations
 importScripts('https://unpkg.com/jszip@3.10.1/dist/jszip.min.js');
-// Import sql.js for SQLite operations  
+// Import sql.js for SQLite operations
 importScripts('https://unpkg.com/sql.js@1.13.0/dist/sql-wasm.js');
 
 let sqlInitialized = false;
@@ -15,386 +15,665 @@ let SQL = null;
 // Initialize sql.js
 async function initSQL() {
   if (sqlInitialized) return SQL;
-  
-  try {
-    SQL = await initSqlJs({
-      locateFile: file => `https://unpkg.com/sql.js@1.13.0/dist/${file}`
-    });
-    sqlInitialized = true;
-    return SQL;
-  } catch (error) {
-    postMessage({
-      type: 'error',
-      error: `Failed to initialize SQLite: ${error.message}`
-    });
-    throw error;
-  }
+
+  SQL = await initSqlJs({
+    locateFile: file => `https://unpkg.com/sql.js@1.13.0/dist/${file}`,
+  });
+  sqlInitialized = true;
+  return SQL;
 }
 
-// Merge media files from all source databases, deduplicating by content hash
-async function mergeMediaFiles(databases) {
-  const mediaFiles = new Map(); // filename -> {data, hash}
-  const seenHashes = new Set(); // track content hashes to deduplicate
-  
-  for (const database of databases) {
-    try {
-      // Get all files from the ZIP except manifest.json and userData.db
-      const fileEntries = Object.keys(database.zip.files).filter(filename => 
-        filename !== 'manifest.json' && 
-        filename !== 'userData.db' &&
-        !filename.endsWith('/') // exclude directories
-      );
-      
-      for (const filename of fileEntries) {
-        try {
-          const fileData = await database.zip.file(filename)?.async('arraybuffer');
-          if (!fileData) continue;
-          
-          // Generate hash of file content for deduplication
-          const hashBuffer = await crypto.subtle.digest('SHA-256', fileData);
-          const hashArray = new Uint8Array(hashBuffer);
-          const contentHash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
-          
-          // Only add if we haven't seen this content before
-          if (!seenHashes.has(contentHash)) {
-            seenHashes.add(contentHash);
-            mediaFiles.set(filename, fileData);
-            console.log(`Added media file: ${filename} (${fileData.byteLength} bytes)`);
-          } else {
-            console.log(`Skipped duplicate media file: ${filename} (content hash: ${contentHash.substring(0, 8)}...)`);
-          }
-        } catch (error) {
-          console.warn(`Failed to process media file ${filename}:`, error.message);
-        }
-      }
-    } catch (error) {
-      console.warn(`Failed to extract media files from ${database.name}:`, error.message);
-    }
-  }
-  
-  console.log(`Media merge complete: ${mediaFiles.size} unique files from ${databases.length} databases`);
-  return mediaFiles;
+// ---------------------------------------------------------------------------
+// ID remapping
+//
+// Every mapping is scoped to the backup it came from. A row from backup B that
+// referenced LocationId 4 must follow *B's* LocationId 4, even when backup A
+// also renumbered a LocationId 4. One shared map across all sources silently
+// re-points one device's notes, tags and highlights at another device's
+// content.
+// ---------------------------------------------------------------------------
+
+// Map<sourceName, Map<tableName, Map<originalId, newId>>>
+const idMappings = new Map();
+
+function resetIdMappings() {
+  idMappings.clear();
+}
+
+function trackIdMapping(sourceName, tableName, originalId, newId) {
+  if (originalId === newId) return;
+  if (!idMappings.has(sourceName)) idMappings.set(sourceName, new Map());
+  const bySource = idMappings.get(sourceName);
+  if (!bySource.has(tableName)) bySource.set(tableName, new Map());
+  bySource.get(tableName).set(originalId, newId);
+}
+
+function resolveMappedId(sourceName, tableName, originalId) {
+  const bySource = idMappings.get(sourceName);
+  if (!bySource) return undefined;
+  const byTable = bySource.get(tableName);
+  if (!byTable) return undefined;
+  return byTable.get(originalId);
+}
+
+function countIdMappings() {
+  let total = 0;
+  idMappings.forEach(bySource =>
+    bySource.forEach(byTable => {
+      total += byTable.size;
+    })
+  );
+  return total;
+}
+
+// Foreign key columns per table, so references can be rewritten when the row
+// they point at was renumbered or deduplicated.
+const FOREIGN_KEYS = {
+  BlockRange: { UserMarkId: 'UserMark' },
+  UserMark: { LocationId: 'Location' },
+  Note: { UserMarkId: 'UserMark', LocationId: 'Location' },
+  PlaylistItem: {
+    PlaylistItemAccuracyId: 'PlaylistItemAccuracy',
+    IndependentMediaId: 'IndependentMedia',
+  },
+  TagMap: { TagId: 'Tag', PlaylistItemId: 'PlaylistItem', LocationId: 'Location', NoteId: 'Note' },
+  // PublicationLocationId is a second, independent reference into Location.
+  // Leaving it unmapped re-points bookmarks at whatever publication happens to
+  // own that id in the merged file.
+  Bookmark: { LocationId: 'Location', PublicationLocationId: 'Location' },
+  InputField: { LocationId: 'Location' },
+  PlaylistItemMarker: { PlaylistItemId: 'PlaylistItem' },
+  PlaylistItemLocationMap: { PlaylistItemId: 'PlaylistItem', LocationId: 'Location' },
+  PlaylistItemIndependentMediaMap: {
+    PlaylistItemId: 'PlaylistItem',
+    IndependentMediaId: 'IndependentMedia',
+  },
+  PlaylistItemMarkerBibleVerseMap: { PlaylistItemMarkerId: 'PlaylistItemMarker' },
+  PlaylistItemMarkerParagraphMap: { PlaylistItemMarkerId: 'PlaylistItemMarker' },
+};
+
+// Column sets that identify the same logical record across backups. The first
+// matching set wins. Each set is also a UNIQUE constraint in the JW Library
+// schema, so a hit means the incoming row cannot be inserted as-is anyway.
+// A set is skipped when any of its values is NULL unless allowNull is set,
+// because NULL columns would otherwise match unrelated rows.
+const IDENTITY_KEYS = {
+  UserMark: [{ cols: ['UserMarkGuid'] }],
+  Note: [{ cols: ['Guid'] }],
+  Tag: [{ cols: ['Type', 'Name'] }],
+  IndependentMedia: [{ cols: ['FilePath'] }],
+  PlaylistItemAccuracy: [{ cols: ['Description'] }],
+  // Two devices bookmarking the same place is one bookmark. Two devices using
+  // the same slot for different places is a slot clash, resolved below.
+  Bookmark: [{ cols: ['PublicationLocationId', 'LocationId', 'BlockType', 'BlockIdentifier'], allowNull: true }],
+  PlaylistItem: [{ cols: ['Label', 'ThumbnailFilePath'], allowNull: true }],
+  PlaylistItemMarker: [{ cols: ['PlaylistItemId', 'StartTimeTicks'] }],
+  BlockRange: [{ cols: ['UserMarkId', 'BlockType', 'Identifier', 'StartToken', 'EndToken'], allowNull: true }],
+  InputField: [{ cols: ['LocationId', 'TextTag'] }],
+  PlaylistItemLocationMap: [{ cols: ['PlaylistItemId', 'LocationId'] }],
+  PlaylistItemIndependentMediaMap: [{ cols: ['PlaylistItemId', 'IndependentMediaId'] }],
+  PlaylistItemMarkerBibleVerseMap: [{ cols: ['PlaylistItemMarkerId', 'VerseId'] }],
+  PlaylistItemMarkerParagraphMap: [{ cols: ['PlaylistItemMarkerId', 'ParagraphIndex'] }],
+  TagMap: [
+    { cols: ['TagId', 'NoteId'] },
+    { cols: ['TagId', 'LocationId'] },
+    { cols: ['TagId', 'PlaylistItemId'] },
+  ],
+  grdb_migrations: [{ cols: ['identifier'] }],
+};
+
+// ---------------------------------------------------------------------------
+// Small SQL helpers
+// ---------------------------------------------------------------------------
+
+function quoteIdent(name) {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+function getColumns(db, tableName) {
+  const result = db.exec(`PRAGMA table_info(${quoteIdent(tableName)})`);
+  if (!result.length || !result[0].values) return [];
+  // cid, name, type, notnull, dflt_value, pk
+  return result[0].values.map(row => ({
+    name: row[1],
+    type: row[2] || '',
+    notNull: row[3] === 1,
+    pk: row[5],
+  }));
+}
+
+function scalar(db, sql, params) {
+  const result = db.exec(sql, params);
+  if (!result.length || !result[0].values.length) return undefined;
+  return result[0].values[0][0];
+}
+
+/**
+ * The single-column INTEGER primary key of a table, or null when the table has
+ * no such key.
+ *
+ * Renumbering is only ever safe for a surrogate key. A composite primary key
+ * (InputField, PlaylistItemLocationMap, ...) or a primary key that is itself a
+ * foreign key must be left alone; arithmetic on those columns silently
+ * re-points the row at unrelated content.
+ */
+function getSurrogateKey(tableName, columns) {
+  const pks = columns.filter(col => col.pk > 0);
+  if (pks.length !== 1) return null;
+
+  const pk = pks[0];
+  if (!/INT/i.test(pk.type)) return null;
+  if (FOREIGN_KEYS[tableName] && FOREIGN_KEYS[tableName][pk.name]) return null;
+
+  return pk.name;
+}
+
+/** Build a NULL-safe equality lookup using SQLite's IS operator. */
+function findExistingRow(targetDb, tableName, keyCols, values, returnColumn) {
+  const where = keyCols.map(col => `${quoteIdent(col)} IS ?`).join(' AND ');
+  const selection = returnColumn ? quoteIdent(returnColumn) : '1';
+  const sql = `SELECT ${selection} FROM ${quoteIdent(tableName)} WHERE ${where} LIMIT 1`;
+  const result = targetDb.exec(sql, values);
+  if (!result.length || !result[0].values.length) return undefined;
+  return result[0].values[0][0];
 }
 
 // Create proper constraint signature for Location entries
 // Handles the two unique constraints in the Location table correctly
 function createLocationConstraintSignature(row, columnNames) {
-  const type = row[columnNames.indexOf('Type')];
-  const bookNumber = row[columnNames.indexOf('BookNumber')];
-  const chapterNumber = row[columnNames.indexOf('ChapterNumber')];
-  const keySymbol = row[columnNames.indexOf('KeySymbol')];
-  const mepsLanguage = row[columnNames.indexOf('MepsLanguage')];
-  const documentId = row[columnNames.indexOf('DocumentId')];
-  const track = row[columnNames.indexOf('Track')];
-  const issueTagNumber = row[columnNames.indexOf('IssueTagNumber')];
-  
+  const value = name => {
+    const index = columnNames.indexOf(name);
+    return index === -1 ? null : row[index];
+  };
+
+  const type = value('Type');
+  const bookNumber = value('BookNumber');
+  const chapterNumber = value('ChapterNumber');
+  const keySymbol = value('KeySymbol');
+  const mepsLanguage = value('MepsLanguage');
+  const documentId = value('DocumentId');
+  const track = value('Track');
+  const issueTagNumber = value('IssueTagNumber');
+
   // Normalize MepsLanguage: treat NULL and 0 as equivalent
-  const normalizedMepsLang = (mepsLanguage === null || mepsLanguage === 0) ? '0' : String(mepsLanguage);
-  
-  // Determine which unique constraint applies based on Type and data structure
+  const normalizedMepsLang = mepsLanguage === null || mepsLanguage === 0 ? '0' : String(mepsLanguage);
+
   // The Location table has two unique constraints:
-  // 1. UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type) - for Bible chapters (Type=0 with BookNumber/ChapterNumber)
-  // 2. UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type) - for publications (Type=1 and Type=0 without BookNumber/ChapterNumber)
-  
+  // 1. UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type) - Bible chapters
+  // 2. UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type) - publications
   if (type === 0 && bookNumber !== null && bookNumber !== 0 && chapterNumber !== null && chapterNumber !== 0) {
-    // Type 0 with BookNumber/ChapterNumber: Bible chapter - use constraint 1
-    return [
-      bookNumber,
-      chapterNumber,
-      keySymbol || 'NULL',
-      normalizedMepsLang,
-      type || 'NULL'
-    ].join('|');
-  } else {
-    // Type 1 (Bible publications) OR Type 0 without BookNumber/ChapterNumber (publications/documents)
-    // Both use constraint 2: UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type)
-    return [
-      keySymbol || 'NULL',
-      issueTagNumber || 'NULL',
-      normalizedMepsLang,
-      documentId || 'NULL',
-      track || 'NULL',
-      type || 'NULL'
-    ].join('|');
+    return ['bible', bookNumber, chapterNumber, keySymbol || 'NULL', normalizedMepsLang, type].join('|');
+  }
+
+  return [
+    'pub',
+    keySymbol || 'NULL',
+    issueTagNumber === null || issueTagNumber === undefined ? 'NULL' : issueTagNumber,
+    normalizedMepsLang,
+    documentId === null || documentId === undefined ? 'NULL' : documentId,
+    track === null || track === undefined ? 'NULL' : track,
+    type === null || type === undefined ? 'NULL' : type,
+  ].join('|');
+}
+
+// Merge media files from all source backups.
+//
+// Files are identified by (name, content). Two backups that carry byte
+// identical media under the same name share one entry. A name reused for
+// different content is republished under a new name and the referencing
+// IndependentMedia rows are pointed at it, so neither backup loses its media.
+async function mergeMediaFiles(databases) {
+  const mediaFiles = new Map(); // published filename -> ArrayBuffer
+  const hashToName = new Map(); // content hash -> published filename
+  const nameToHash = new Map(); // published filename -> content hash
+  const filePathRemaps = new Map(); // sourceName -> Map(originalPath -> publishedPath)
+
+  for (const database of databases) {
+    const remaps = new Map();
+    filePathRemaps.set(database.name, remaps);
+
+    const fileEntries = Object.keys(database.zip.files).filter(
+      filename =>
+        filename !== 'manifest.json' && filename !== 'userData.db' && !filename.endsWith('/')
+    );
+
+    for (const filename of fileEntries) {
+      try {
+        const fileData = await database.zip.file(filename)?.async('arraybuffer');
+        if (!fileData) continue;
+
+        const hashBuffer = await crypto.subtle.digest('SHA-256', fileData);
+        const contentHash = Array.from(new Uint8Array(hashBuffer))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+
+        const existingName = hashToName.get(contentHash);
+        if (existingName) {
+          // Identical content already published, possibly under another name.
+          if (existingName !== filename) remaps.set(filename, existingName);
+          continue;
+        }
+
+        let publishedName = filename;
+        if (nameToHash.has(filename)) {
+          // Same name, different content - publish under a distinct name.
+          publishedName = uniqueMediaName(filename, nameToHash, contentHash);
+          remaps.set(filename, publishedName);
+        }
+
+        mediaFiles.set(publishedName, fileData);
+        hashToName.set(contentHash, publishedName);
+        nameToHash.set(publishedName, contentHash);
+      } catch (error) {
+        console.warn(`Failed to process media file ${filename}:`, error.message);
+      }
+    }
+  }
+
+  return { mediaFiles, filePathRemaps };
+}
+
+function uniqueMediaName(filename, nameToHash, contentHash) {
+  const dot = filename.lastIndexOf('.');
+  const slash = filename.lastIndexOf('/');
+  const hasExt = dot > slash;
+  const stem = hasExt ? filename.slice(0, dot) : filename;
+  const ext = hasExt ? filename.slice(dot) : '';
+  const suffix = contentHash.substring(0, 8);
+
+  let candidate = `${stem}-${suffix}${ext}`;
+  let counter = 1;
+  while (nameToHash.has(candidate)) {
+    candidate = `${stem}-${suffix}-${counter}${ext}`;
+    counter++;
+  }
+  return candidate;
+}
+
+// ---------------------------------------------------------------------------
+// Schema handling
+// ---------------------------------------------------------------------------
+
+/**
+ * Pick the backup whose schema is a superset of all the others and copy its
+ * full schema - tables *and* indexes, triggers and views. Copying only
+ * CREATE TABLE statements drops every UNIQUE index the app relies on, which
+ * both lets duplicates through the merge and hands JW Library a database that
+ * no longer matches the one it wrote.
+ */
+function buildTargetSchema(targetDb, databases) {
+  const donor = databases.reduce((best, candidate) => {
+    const bestVersion = best.manifest?.userDataBackup?.schemaVersion ?? 0;
+    const candidateVersion = candidate.manifest?.userDataBackup?.schemaVersion ?? 0;
+    if (candidateVersion !== bestVersion) return candidateVersion > bestVersion ? candidate : best;
+    return countSchemaColumns(candidate.db) > countSchemaColumns(best.db) ? candidate : best;
+  }, databases[0]);
+
+  const objects = donor.db.exec(
+    "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' " +
+      "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END"
+  );
+
+  if (!objects.length || !objects[0].values.length) {
+    throw new Error('No tables found in the backup database');
+  }
+
+  for (const [type, name, sql] of objects[0].values) {
+    try {
+      targetDb.exec(sql);
+    } catch (error) {
+      throw new Error(`Failed to recreate ${type} ${name}: ${error.message}`);
+    }
+  }
+
+  verifySourceSchemasFit(donor, databases);
+  return donor;
+}
+
+function countSchemaColumns(db) {
+  const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+  if (!tables.length) return 0;
+  return tables[0].values.reduce((sum, [name]) => sum + getColumns(db, name).length, 0);
+}
+
+/**
+ * Every source must fit inside the donor schema. A backup written by a newer
+ * JW Library version can carry tables or columns the donor has never heard of;
+ * merging it anyway drops that data without telling anyone.
+ */
+function verifySourceSchemasFit(donor, databases) {
+  const donorTables = new Map();
+  const tables = donor.db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+  if (tables.length) {
+    for (const [name] of tables[0].values) {
+      donorTables.set(name, new Set(getColumns(donor.db, name).map(col => col.name)));
+    }
+  }
+
+  for (const database of databases) {
+    if (database === donor) continue;
+
+    const sourceTables = database.db.exec(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    );
+    if (!sourceTables.length) continue;
+
+    for (const [tableName] of sourceTables[0].values) {
+      const donorColumns = donorTables.get(tableName);
+      if (!donorColumns) {
+        throw new Error(
+          `${database.name} contains a "${tableName}" table that ${donor.name} does not. ` +
+            'These backups were made with incompatible JW Library versions - update the older ' +
+            'device and export a fresh backup before merging.'
+        );
+      }
+
+      const unknown = getColumns(database.db, tableName)
+        .map(col => col.name)
+        .filter(col => !donorColumns.has(col));
+
+      if (unknown.length) {
+        throw new Error(
+          `${database.name} has ${tableName} column(s) "${unknown.join('", "')}" that ${donor.name} ` +
+            'does not. These backups were made with incompatible JW Library versions - update the ' +
+            'older device and export a fresh backup before merging.'
+        );
+      }
+    }
   }
 }
 
 // Process merge operation
 async function processMerge(files, mergeConfig) {
+  // Declared outside the try so the failure path can still close them. When
+  // these lived inside the try, the catch block threw "databases is not
+  // defined" on every error, no message was ever posted, and the UI waited on
+  // a promise that could never settle.
+  let databases = [];
+  let mergedDb = null;
+
   try {
-    // Clear any previous ID mappings
-    idMappings.clear();
-    
-    // Clear previous debug logs
-    // Configuration and table inclusion verified as working correctly
-    
+    resetIdMappings();
+
     postMessage({ type: 'progress', message: 'Initializing SQLite engine...', progress: 5 });
-    
+
     await initSQL();
-    
+
     postMessage({ type: 'progress', message: 'Loading and validating files...', progress: 10 });
-    
+
     // Load all JWL files
     const loadedFiles = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      postMessage({ 
-        type: 'progress', 
-        message: `Loading ${file.name}...`, 
-        progress: 10 + (i / files.length) * 20 
+      postMessage({
+        type: 'progress',
+        message: `Loading ${file.name}...`,
+        progress: 10 + (i / files.length) * 20,
       });
-      
+
       try {
         const zip = await JSZip.loadAsync(file.data);
         const manifest = await zip.file('manifest.json')?.async('string');
         const userDataDb = await zip.file('userData.db')?.async('arraybuffer');
-        
+
         if (!manifest || !userDataDb) {
           throw new Error(`Invalid JWL file: ${file.name} - missing required files`);
         }
-        
+
         loadedFiles.push({
           name: file.name,
           manifest: JSON.parse(manifest),
           database: userDataDb,
           dataTypes: file.dataTypes || {},
-          zip: zip
+          zip: zip,
         });
       } catch (error) {
         throw new Error(`Failed to load ${file.name}: ${error.message}`);
       }
     }
-    
+
+    if (loadedFiles.length < 2) {
+      throw new Error('At least two backup files are required for a merge.');
+    }
+
+    // Mappings are keyed by source name, so duplicate names would merge two
+    // backups' mappings together and mis-point their foreign keys.
+    const uniqueNames = new Set();
+    loadedFiles.forEach((file, index) => {
+      let name = file.name;
+      let counter = 2;
+      while (uniqueNames.has(name)) {
+        name = `${file.name} (${counter})`;
+        counter++;
+      }
+      uniqueNames.add(name);
+      loadedFiles[index].name = name;
+    });
+
     postMessage({ type: 'progress', message: 'Analyzing databases...', progress: 35 });
-    
+
     // Initialize databases
-    const databases = loadedFiles.map(file => {
+    databases = loadedFiles.map(file => {
       try {
-        return {
-          ...file,
-          db: new SQL.Database(new Uint8Array(file.database))
-        };
+        return { ...file, db: new SQL.Database(new Uint8Array(file.database)) };
       } catch (error) {
         throw new Error(`Failed to open database in ${file.name}: ${error.message}`);
       }
     });
-    
+
     postMessage({ type: 'progress', message: 'Creating merged database...', progress: 45 });
-    
-    // Create new merged database
-    const mergedDb = new SQL.Database();
-    
-    // Get schema from first database
-    const firstDb = databases[0].db;
-    const tables = firstDb.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
-    
-    if (tables.length === 0 || !tables[0].values) {
-      throw new Error('No tables found in database');
-    }
-    
-    // Create tables in merged database
-    for (const [tableName] of tables[0].values) {
-      const createTableStmt = firstDb.exec(`SELECT sql FROM sqlite_master WHERE type='table' AND name='${tableName}'`);
-      if (createTableStmt.length > 0 && createTableStmt[0].values[0]) {
-        mergedDb.exec(createTableStmt[0].values[0][0]);
-      }
-    }
-    
+
+    mergedDb = new SQL.Database();
+    const donor = buildTargetSchema(mergedDb, databases);
+
+    postMessage({ type: 'progress', message: 'Merging media files...', progress: 50 });
+
+    // Media is merged before IndependentMedia so renamed files can be
+    // reflected in the FilePath column the app looks them up by.
+    const { mediaFiles, filePathRemaps } = await mergeMediaFiles(databases);
+
     postMessage({ type: 'progress', message: 'Merging data...', progress: 55 });
-    
-    // Get all available tables and merge in dependency order
-    const availableTableNames = tables[0].values.map(row => row[0]);
+
+    const availableTableNames = donor.db
+      .exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")[0]
+      .values.map(row => row[0]);
+
     const orderedTables = getTableMergeOrder();
-    
-    // Filter ordered tables to only include those that exist in the database, EXCLUDING Location
-    const tablesToMerge = orderedTables.filter(tableName => 
-      availableTableNames.includes(tableName) && tableName !== 'Location'
+    // LastModified holds a single timestamp for the whole backup; it is
+    // rewritten once at the end rather than accumulated row by row.
+    const skip = new Set(['Location', 'LastModified']);
+
+    const tablesToMerge = orderedTables.filter(
+      tableName => availableTableNames.includes(tableName) && !skip.has(tableName)
     );
-    
-    // Add any tables not in our predefined order (merge them last), EXCLUDING Location
-    const unorderedTables = availableTableNames.filter(tableName => 
-      !orderedTables.includes(tableName) && tableName !== 'Location'
+    tablesToMerge.push(
+      ...availableTableNames.filter(
+        tableName => !orderedTables.includes(tableName) && !skip.has(tableName)
+      )
     );
-    tablesToMerge.push(...unorderedTables);
-    
-    // Process Location table FIRST if it exists and should be included
+
     let processedTables = 0;
     const totalTables = tablesToMerge.length + (availableTableNames.includes('Location') ? 1 : 0);
-    
-    if (availableTableNames.includes('Location') && shouldIncludeDataType('Location', mergeConfig)) {
-      postMessage({ 
-        type: 'progress', 
-        message: 'Merging Location data...', 
-        progress: 55 + (processedTables / totalTables) * 30 
+
+    // Every insert would otherwise be its own transaction. Real backups carry
+    // tens of thousands of rows, and the per-statement overhead is what makes
+    // a merge look like it has hung.
+    mergedDb.exec('BEGIN TRANSACTION');
+    const temporaryIndexes = createIdentityIndexes(mergedDb);
+
+    // Location first: almost everything else references it.
+    if (availableTableNames.includes('Location')) {
+      postMessage({
+        type: 'progress',
+        message: 'Merging Location data...',
+        progress: 55 + (processedTables / totalTables) * 30,
       });
-      
-      await mergeLocationData(mergedDb, databases, mergeConfig);
+
+      mergeLocationData(mergedDb, databases);
       processedTables++;
     }
-    
-    // Process all other tables
+
     for (const tableName of tablesToMerge) {
-      postMessage({ 
-        type: 'progress', 
-        message: `Merging ${tableName} data...`, 
-        progress: 55 + (processedTables / totalTables) * 30 
+      postMessage({
+        type: 'progress',
+        message: `Merging ${tableName} data...`,
+        progress: 55 + (processedTables / totalTables) * 30,
       });
-      
-      // Check if this data type should be included
-      const shouldIncludeTable = shouldIncludeDataType(tableName, mergeConfig);
-      
-      if (shouldIncludeTable) {
-        await mergeTableData(mergedDb, databases, tableName, mergeConfig);
+
+      if (shouldIncludeDataType(tableName, mergeConfig)) {
+        mergeTableData(mergedDb, databases, tableName, { filePathRemaps });
       }
-      
+
       processedTables++;
     }
-    
-    postMessage({ type: 'progress', message: 'Merging media files...', progress: 85 });
-    
-    // Merge media files from all source databases
-    const mergedMediaFiles = await mergeMediaFiles(databases);
-    
+
+    if (availableTableNames.includes('LastModified')) {
+      writeLastModified(mergedDb, databases);
+    }
+
+    // Excluded data types and unresolvable references leave dangling rows
+    // behind. JW Library refuses a backup whose foreign keys do not resolve.
+    const cleanup = removeDanglingRecords(mergedDb);
+
+    dropIndexes(mergedDb, temporaryIndexes);
+    mergedDb.exec('COMMIT');
+
     postMessage({ type: 'progress', message: 'Creating merged JWL file...', progress: 90 });
-    
+
+    const validationResults = validateMergeIntegrity(mergedDb, cleanup);
+
     // Export merged database
     const mergedDbData = mergedDb.export();
-    
+
     // Create new JWL file
     const mergedZip = new JSZip();
-    
-    // Create merged manifest using format from source files
+
     const now = new Date();
-    const dateString = now.toISOString().substring(0, 19); // Keep the T separator
+    const pad = value => String(value).padStart(2, '0');
+    // creationDate is a plain calendar date in a JW Library manifest.
+    const creationDate = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     const timezoneOffset = -now.getTimezoneOffset();
-    const offsetHours = Math.floor(Math.abs(timezoneOffset) / 60);
-    const offsetMinutes = Math.abs(timezoneOffset) % 60;
     const offsetSign = timezoneOffset >= 0 ? '+' : '-';
-    const formattedDate = `${dateString}${offsetSign}${String(offsetHours).padStart(2, '0')}${String(offsetMinutes).padStart(2, '0')}`;
-    
-    // Generate SHA-256 hash of the database file
-    // Ensure we're hashing the raw database bytes correctly
-    const dbBuffer = new Uint8Array(mergedDbData);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', dbBuffer);
-    const hashArray = new Uint8Array(hashBuffer);
-    const hash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
-    
+    const lastModifiedDate =
+      `${creationDate}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}` +
+      `${offsetSign}${pad(Math.floor(Math.abs(timezoneOffset) / 60))}${pad(Math.abs(timezoneOffset) % 60)}`;
+
+    // SHA-256 of the database file, lower-case hex - JW Library verifies this.
+    const hashBuffer = await crypto.subtle.digest('SHA-256', new Uint8Array(mergedDbData));
+    const hash = Array.from(new Uint8Array(hashBuffer))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    // The manifest must describe the database that is actually in the archive.
+    // A hard-coded schemaVersion makes JW Library read the file with the wrong
+    // schema, which is rejected on import.
+    const schemaVersion = donor.manifest?.userDataBackup?.schemaVersion;
+    if (typeof schemaVersion !== 'number') {
+      throw new Error('Source backups do not declare a schema version; cannot build a valid manifest.');
+    }
+
     const mergedManifest = {
-      name: `merged-library-${now.toISOString().split('T')[0]}.jwlibrary`,
-      creationDate: formattedDate,
+      name: `merged-library-${creationDate}`,
+      creationDate: creationDate,
       version: 1,
       type: 0,
       userDataBackup: {
-        lastModifiedDate: formattedDate,
+        lastModifiedDate: lastModifiedDate,
         databaseName: 'userData.db',
         deviceName: 'JWL Merge',
         hash: hash,
-        schemaVersion: 14
-      }
+        schemaVersion: schemaVersion,
+      },
     };
-    
+
     mergedZip.file('manifest.json', JSON.stringify(mergedManifest, null, 2));
     mergedZip.file('userData.db', mergedDbData);
-    
-    // Add merged media files to the ZIP
-    for (const [filename, fileData] of mergedMediaFiles) {
+
+    for (const [filename, fileData] of mediaFiles) {
       mergedZip.file(filename, fileData);
     }
-    
+
     postMessage({ type: 'progress', message: 'Finalizing file...', progress: 95 });
-    
-    // Generate final ZIP
-    const mergedBlob = await mergedZip.generateAsync({ 
+
+    const mergedBlob = await mergedZip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
       compressionOptions: { level: 6 },
-      mimeType: 'application/octet-stream'
+      mimeType: 'application/octet-stream',
     });
-    
+
     postMessage({ type: 'progress', message: 'Complete!', progress: 100 });
-    
-    // Run post-merge data integrity validation
-    const validationResults = validateMergeIntegrity(mergedDb);
-    
-    // Send result back to main thread
+
     postMessage({
       type: 'success',
       result: {
         blob: mergedBlob,
-        fileName: `merged-library-${new Date().toISOString().split('T')[0]}.jwlibrary`,
+        fileName: `merged-library-${creationDate}.jwlibrary`,
         stats: {
           filesProcessed: files.length,
           tablesProcessed: processedTables,
-          finalSize: mergedBlob.size
+          finalSize: mergedBlob.size,
         },
-        validation: validationResults
-      }
+        validation: validationResults,
+      },
     });
-    
-    // Clean up
-    databases.forEach(db => {
-      try { db.db.close(); } catch (e) { console.warn('Error closing source database:', e.message); }
-    });
-    try { mergedDb.close(); } catch (e) { console.warn('Error closing merged database:', e.message); }
-    
   } catch (error) {
-    // Ensure cleanup happens even on error
-    databases.forEach(db => {
-      try { db.db.close(); } catch (e) { console.warn('Error closing source database during cleanup:', e.message); }
-    });
-    try { mergedDb.close(); } catch (e) { console.warn('Error closing merged database during cleanup:', e.message); }
-    
     postMessage({
       type: 'error',
-      error: error.message || 'Unknown error during merge processing'
+      error: error.message || 'Unknown error during merge processing',
     });
+  } finally {
+    databases.forEach(database => {
+      try {
+        database.db?.close();
+      } catch (error) {
+        console.warn('Error closing source database:', error.message);
+      }
+    });
+    try {
+      mergedDb?.close();
+    } catch (error) {
+      console.warn('Error closing merged database:', error.message);
+    }
   }
 }
+
+// Map database tables to the data types the UI exposes. Tables that carry a
+// data type's supporting rows are listed against the same id so a disabled
+// type does not leave half of itself behind.
+const TABLE_DATA_TYPES = {
+  Note: ['notes'],
+  Bookmark: ['bookmarks'],
+  UserMark: ['highlights', 'usermarks'],
+  BlockRange: ['highlights', 'usermarks'],
+  Tag: ['tags'],
+  TagMap: ['tags'],
+  InputField: ['inputfields'],
+  PlaylistItem: ['playlists'],
+  PlaylistItemAccuracy: ['playlists'],
+  PlaylistItemMarker: ['playlists'],
+  PlaylistItemLocationMap: ['playlists'],
+  PlaylistItemIndependentMediaMap: ['playlists'],
+  PlaylistItemMarkerBibleVerseMap: ['playlists'],
+  PlaylistItemMarkerParagraphMap: ['playlists'],
+  IndependentMedia: ['playlists'],
+};
 
 // Helper function to determine if a table/data type should be included
 function shouldIncludeDataType(tableName, mergeConfig) {
-  // Map database table names to data type IDs
-  const tableMap = {
-    'Note': 'notes',
-    'Bookmark': 'bookmarks', 
-    'UserMark': 'highlights',
-    'TagMap': 'tags',
-    'InputField': 'inputfields',
-    'Playlist': 'playlists'
-  };
-  
-  const dataTypeId = tableMap[tableName];
-  if (!dataTypeId) {
-    // Include unknown tables by default
-    return true;
-  }
-  
-  // Check if this data type is enabled in global config
-  // If mergeConfig.globalDataTypes is undefined/null, include all data types by default
-  if (!mergeConfig.globalDataTypes) {
-    return true;
-  }
-  
-  return mergeConfig.globalDataTypes[dataTypeId];
-}
+  const dataTypeIds = TABLE_DATA_TYPES[tableName];
+  if (!dataTypeIds) return true; // Structural tables are always merged
 
-// Check if table has GUID-based or composite unique constraints
-function isGuidOrCompositeUniqueTable(tableName) {
-  const guidOrCompositeTables = [
-    'UserMark',      // UserMarkGuid
-    'Note',          // Guid
-    'Bookmark',      // PublicationLocationId + Slot composite
-    'TagMap',        // Multiple UNIQUE constraints (TagId+Position, TagId+NoteId, etc.)
-    'Location',      // BookNumber + ChapterNumber + KeySymbol + MepsLanguage + Type + IssueTagNumber composite
-    'Tag',           // Type + Name composite
-    'PlaylistItem',  // Content-based duplicates (Label + timings)
-    'PlaylistItemMarker', // PlaylistItemId + StartTimeTicks composite
-    'IndependentMedia',   // FilePath
-    'PlaylistItemAccuracy', // Description
-    'grdb_migrations'     // identifier
-  ];
-  
-  return guidOrCompositeTables.includes(tableName);
+  const globalDataTypes = mergeConfig && mergeConfig.globalDataTypes;
+  if (!globalDataTypes) return true;
+
+  // A data type nobody configured is included. Treating an absent key as
+  // "disabled" silently drops the user's notes when the UI and the worker
+  // disagree about an id.
+  const configured = dataTypeIds.filter(id => id in globalDataTypes);
+  if (configured.length === 0) return true;
+
+  return configured.some(id => globalDataTypes[id]);
 }
 
 // Define table merge order based on foreign key dependencies
@@ -405,1030 +684,556 @@ function getTableMergeOrder() {
     'LastModified',
     'grdb_migrations',
     'PlaylistItemAccuracy',
-    
+
     // Level 1: Basic reference tables
     'Location',
     'Tag',
     'IndependentMedia',
-    
+
     // Level 2: Tables that depend on Level 1
-    'UserMark',           // depends on Location
-    'PlaylistItem',       // depends on PlaylistItemAccuracy, IndependentMedia
-    'Bookmark',           // depends on Location
-    
+    'UserMark', // depends on Location
+    'PlaylistItem', // depends on PlaylistItemAccuracy, IndependentMedia
+    'Bookmark', // depends on Location
+
     // Level 3: Tables that depend on Level 2
-    'Note',               // depends on UserMark, Location
-    'BlockRange',         // depends on UserMark
+    'Note', // depends on UserMark, Location
+    'BlockRange', // depends on UserMark
     'PlaylistItemMarker', // depends on PlaylistItem
     'PlaylistItemLocationMap', // depends on PlaylistItem, Location
     'PlaylistItemIndependentMediaMap', // depends on PlaylistItem, IndependentMedia
-    
+
     // Level 4: Tables that depend on Level 3
-    'TagMap',             // depends on Tag, PlaylistItem, Location, Note
+    'TagMap', // depends on Tag, PlaylistItem, Location, Note
     'PlaylistItemMarkerBibleVerseMap', // depends on PlaylistItemMarker
-    'PlaylistItemMarkerParagraphMap',  // depends on PlaylistItemMarker
-    
-    // Level 5: Input fields (depends on various tables)
-    'InputField'
+    'PlaylistItemMarkerParagraphMap', // depends on PlaylistItemMarker
+
+    // Level 5: Input fields (depends on Location)
+    'InputField',
   ];
-}
-
-// Global ID mapping tracker for foreign key updates
-const idMappings = new Map(); // Map: tableName -> Map(originalId -> newId)
-const sourceSpecificMappings = new Map(); // Map: sourceDb -> Map(tableName -> Map(originalId -> newId))
-
-// Track ID remapping for foreign key updates
-function trackIdMapping(tableName, originalId, newId, sourceDb = null) {
-  if (sourceDb) {
-    // Source-specific mapping (for resolving conflicts)
-    if (!sourceSpecificMappings.has(sourceDb)) {
-      sourceSpecificMappings.set(sourceDb, new Map());
-    }
-    if (!sourceSpecificMappings.get(sourceDb).has(tableName)) {
-      sourceSpecificMappings.get(sourceDb).set(tableName, new Map());
-    }
-    sourceSpecificMappings.get(sourceDb).get(tableName).set(originalId, newId);
-  } else {
-    // Global mapping (backward compatibility for non-source-specific cases)
-    if (!idMappings.has(tableName)) {
-      idMappings.set(tableName, new Map());
-    }
-    idMappings.get(tableName).set(originalId, newId);
-  }
 }
 
 // Helper function to get readable location description for logging
 function getLocationDescription(row, columnNames) {
-  const bookNumberIndex = columnNames.indexOf('BookNumber');
-  const chapterNumberIndex = columnNames.indexOf('ChapterNumber');
-  const keySymbolIndex = columnNames.indexOf('KeySymbol');
-  const issueTagNumberIndex = columnNames.indexOf('IssueTagNumber');
-  
-  const bookNumber = bookNumberIndex >= 0 ? row[bookNumberIndex] : null;
-  const chapterNumber = chapterNumberIndex >= 0 ? row[chapterNumberIndex] : null;
-  const keySymbol = keySymbolIndex >= 0 ? row[keySymbolIndex] : null;
-  const issueTagNumber = issueTagNumberIndex >= 0 ? row[issueTagNumberIndex] : null;
-  
-  if (issueTagNumber) {
-    return `${keySymbol}/${issueTagNumber}`;
-  } else if (bookNumber && chapterNumber) {
-    return `Book ${bookNumber}, Chapter ${chapterNumber} (${keySymbol})`;
-  } else {
-    return `${keySymbol || 'Unknown'}`;
+  const value = name => {
+    const index = columnNames.indexOf(name);
+    return index === -1 ? null : row[index];
+  };
+
+  const bookNumber = value('BookNumber');
+  const chapterNumber = value('ChapterNumber');
+  const keySymbol = value('KeySymbol');
+  const issueTagNumber = value('IssueTagNumber');
+
+  if (issueTagNumber) return `${keySymbol}/${issueTagNumber}`;
+  if (bookNumber && chapterNumber) return `Book ${bookNumber}, Chapter ${chapterNumber} (${keySymbol})`;
+  return `${keySymbol || 'Unknown'}`;
+}
+
+/**
+ * Rewrite every foreign key in a row to follow the rows this source's records
+ * were actually merged into. Only this source's mappings are consulted.
+ */
+function remapForeignKeys(row, tableName, columnNames, sourceName) {
+  const fkRelations = FOREIGN_KEYS[tableName];
+  if (!fkRelations) return row.slice();
+
+  return row.map((value, index) => {
+    const referencedTable = fkRelations[columnNames[index]];
+    if (!referencedTable || value === null || value === undefined) return value;
+
+    const mapped = resolveMappedId(sourceName, referencedTable, value);
+    return mapped === undefined ? value : mapped;
+  });
+}
+
+/** Find the row in the target that already represents this incoming row. */
+function findIdentityMatch(targetDb, tableName, row, columnNames, surrogateKey) {
+  const keySets = IDENTITY_KEYS[tableName];
+  if (!keySets) return undefined;
+
+  for (const keySet of keySets) {
+    const indexes = keySet.cols.map(col => columnNames.indexOf(col));
+    if (indexes.some(index => index === -1)) continue;
+
+    const values = indexes.map(index => row[index]);
+    if (!keySet.allowNull && values.some(value => value === null || value === undefined)) continue;
+
+    const existing = findExistingRow(targetDb, tableName, keySet.cols, values, surrogateKey);
+    if (existing !== undefined) return existing === null ? true : existing;
+  }
+
+  return undefined;
+}
+
+/**
+ * TagMap enforces UNIQUE(TagId, Position). Two devices independently number
+ * their tag assignments from zero, so collisions are the norm rather than a
+ * sign of duplication. Move the incoming row to the end of that tag's list
+ * instead of dropping the assignment.
+ */
+function resolveTagMapPosition(targetDb, row, columnNames) {
+  const tagIdIndex = columnNames.indexOf('TagId');
+  const positionIndex = columnNames.indexOf('Position');
+  if (tagIdIndex === -1 || positionIndex === -1) return row;
+
+  const tagId = row[tagIdIndex];
+  const position = row[positionIndex];
+  if (tagId === null || position === null) return row;
+
+  const taken = findExistingRow(targetDb, 'TagMap', ['TagId', 'Position'], [tagId, position], 'TagMapId');
+  if (taken === undefined) return row;
+
+  const maxPosition = scalar(targetDb, 'SELECT MAX(Position) FROM TagMap WHERE TagId IS ?', [tagId]);
+  const adjusted = row.slice();
+  adjusted[positionIndex] = (maxPosition === null || maxPosition === undefined ? -1 : maxPosition) + 1;
+  return adjusted;
+}
+
+/**
+ * Bookmark enforces UNIQUE(PublicationLocationId, Slot). Devices number their
+ * bookmark slots independently, so a clash between two different bookmarks in
+ * the same publication is expected. Move the incoming one to a free slot
+ * rather than discarding the user's bookmark.
+ */
+function resolveBookmarkSlot(targetDb, row, columnNames) {
+  const publicationIndex = columnNames.indexOf('PublicationLocationId');
+  const slotIndex = columnNames.indexOf('Slot');
+  if (publicationIndex === -1 || slotIndex === -1) return row;
+
+  const publicationId = row[publicationIndex];
+  const slot = row[slotIndex];
+  if (publicationId === null || slot === null) return row;
+
+  const taken = findExistingRow(
+    targetDb,
+    'Bookmark',
+    ['PublicationLocationId', 'Slot'],
+    [publicationId, slot],
+    'BookmarkId'
+  );
+  if (taken === undefined) return row;
+
+  const maxSlot = scalar(targetDb, 'SELECT MAX(Slot) FROM Bookmark WHERE PublicationLocationId IS ?', [
+    publicationId,
+  ]);
+  const adjusted = row.slice();
+  adjusted[slotIndex] = (maxSlot === null || maxSlot === undefined ? -1 : maxSlot) + 1;
+  return adjusted;
+}
+
+/**
+ * Holistic Location merge.
+ * Phase 1: global duplicate detection across every backup.
+ * Phase 2: insert unique content, resolving LocationId collisions.
+ */
+function mergeLocationData(targetDb, sourceDatabases) {
+  const allLocations = [];
+  const globalContentMap = new Map(); // content signature -> first occurrence
+
+  for (const database of sourceDatabases) {
+    try {
+      const data = database.db.exec('SELECT * FROM Location ORDER BY LocationId');
+      if (!data.length || !data[0].values) continue;
+
+      const columnNames = getColumns(database.db, 'Location').map(col => col.name);
+      const idIndex = columnNames.indexOf('LocationId');
+
+      for (const row of data[0].values) {
+        const locationInfo = {
+          row,
+          columnNames,
+          sourceName: database.name,
+          originalLocationId: row[idIndex],
+          contentSignature: createLocationConstraintSignature(row, columnNames),
+        };
+
+        allLocations.push(locationInfo);
+        if (!globalContentMap.has(locationInfo.contentSignature)) {
+          globalContentMap.set(locationInfo.contentSignature, locationInfo);
+        }
+      }
+    } catch (error) {
+      console.warn(`Could not read Location table from ${database.name}:`, error.message);
+    }
+  }
+
+  const usedLocationIds = new Set();
+  let insertedCount = 0;
+  let duplicateCount = 0;
+
+  for (const locationInfo of allLocations) {
+    const { row, columnNames, sourceName, originalLocationId, contentSignature } = locationInfo;
+    const firstOccurrence = globalContentMap.get(contentSignature);
+
+    if (firstOccurrence !== locationInfo) {
+      const survivingId = firstOccurrence.finalLocationId;
+      if (survivingId === undefined) {
+        console.warn(`Location ${originalLocationId} from ${sourceName} has no surviving duplicate; skipping`);
+        continue;
+      }
+      trackIdMapping(sourceName, 'Location', originalLocationId, survivingId);
+      duplicateCount++;
+      continue;
+    }
+
+    const idColumnIndex = columnNames.indexOf('LocationId');
+    const adjustedRow = row.slice();
+    let finalLocationId = originalLocationId;
+
+    if (usedLocationIds.has(originalLocationId)) {
+      let candidate = originalLocationId;
+      while (usedLocationIds.has(candidate)) candidate++;
+      finalLocationId = candidate;
+      adjustedRow[idColumnIndex] = candidate;
+      trackIdMapping(sourceName, 'Location', originalLocationId, candidate);
+    }
+
+    const columnList = columnNames.map(quoteIdent).join(',');
+    const placeholders = columnNames.map(() => '?').join(',');
+    targetDb.exec(`INSERT INTO Location (${columnList}) VALUES (${placeholders})`, adjustedRow);
+
+    const inserted = findExistingRow(targetDb, 'Location', ['LocationId'], [finalLocationId], 'LocationId');
+    if (inserted === undefined) {
+      throw new Error(
+        `Failed to insert Location ${getLocationDescription(adjustedRow, columnNames)} from ${sourceName}`
+      );
+    }
+
+    usedLocationIds.add(finalLocationId);
+    locationInfo.finalLocationId = finalLocationId;
+    insertedCount++;
+  }
+
+  console.log(`Location merge complete: ${insertedCount} inserted, ${duplicateCount} duplicates mapped`);
+}
+
+/**
+ * Merge one table from every source into the target.
+ *
+ * Order matters and is the source of most of the damage a naive merge does:
+ *   1. rewrite foreign keys, so duplicate checks compare merged-world values
+ *   2. look for an existing row with the same identity, and map onto it
+ *   3. only then resolve a primary key collision
+ *   4. insert, and record the mapping once the insert is known to have landed
+ */
+function mergeTableData(targetDb, sourceDatabases, tableName, options = {}) {
+  const { filePathRemaps } = options;
+
+  const targetColumns = getColumns(targetDb, tableName);
+  if (!targetColumns.length) return;
+
+  const targetColumnNames = new Set(targetColumns.map(col => col.name));
+  const surrogateKey = getSurrogateKey(tableName, targetColumns);
+
+  for (const database of sourceDatabases) {
+    const sourceName = database.name;
+
+    try {
+      const sourceColumns = getColumns(database.db, tableName)
+        .map(col => col.name)
+        .filter(col => targetColumnNames.has(col));
+
+      if (!sourceColumns.length) continue;
+
+      const columnList = sourceColumns.map(quoteIdent).join(',');
+      const data = database.db.exec(`SELECT ${columnList} FROM ${quoteIdent(tableName)}`);
+      if (!data.length || !data[0].values) continue;
+
+      const idIndex = surrogateKey ? sourceColumns.indexOf(surrogateKey) : -1;
+      const placeholders = sourceColumns.map(() => '?').join(',');
+      const insertSql = `INSERT INTO ${quoteIdent(tableName)} (${columnList}) VALUES (${placeholders})`;
+
+      for (const sourceRow of data[0].values) {
+        try {
+          let row = remapForeignKeys(sourceRow, tableName, sourceColumns, sourceName);
+
+          if (tableName === 'IndependentMedia' && filePathRemaps) {
+            row = applyMediaPathRemap(row, sourceColumns, filePathRemaps.get(sourceName));
+          }
+
+          const originalId = idIndex === -1 ? undefined : sourceRow[idIndex];
+
+          // 2. Same record, already merged from another backup.
+          const existing = findIdentityMatch(targetDb, tableName, row, sourceColumns, surrogateKey);
+          if (existing !== undefined) {
+            if (originalId !== undefined && typeof existing === 'number') {
+              trackIdMapping(sourceName, tableName, originalId, existing);
+            }
+            continue;
+          }
+
+          if (tableName === 'TagMap') {
+            row = resolveTagMapPosition(targetDb, row, sourceColumns);
+          } else if (tableName === 'Bookmark') {
+            row = resolveBookmarkSlot(targetDb, row, sourceColumns);
+          }
+
+          // 3. Distinct record that happens to reuse a primary key.
+          let finalId = originalId;
+          if (surrogateKey && idIndex !== -1) {
+            const taken = findExistingRow(targetDb, tableName, [surrogateKey], [originalId], surrogateKey);
+            if (taken !== undefined) {
+              finalId = nextAvailableId(targetDb, tableName, surrogateKey);
+              row = row.slice();
+              row[idIndex] = finalId;
+            }
+          }
+
+          // A plain INSERT throws on a constraint violation rather than
+          // dropping the row, so reaching the next line means it landed.
+          targetDb.exec(insertSql, row);
+
+          // 4. Record the mapping only once the row is actually there.
+          if (surrogateKey && idIndex !== -1) {
+            trackIdMapping(sourceName, tableName, originalId, finalId);
+          }
+        } catch (error) {
+          console.warn(`Failed to insert row in ${tableName} from ${sourceName}:`, error.message);
+        }
+      }
+    } catch (error) {
+      console.warn(`Error merging ${tableName} from ${sourceName}:`, error.message);
+    }
+  }
+}
+
+function applyMediaPathRemap(row, columnNames, remaps) {
+  if (!remaps || remaps.size === 0) return row;
+
+  const pathIndex = columnNames.indexOf('FilePath');
+  if (pathIndex === -1) return row;
+
+  const remapped = remaps.get(row[pathIndex]);
+  if (remapped === undefined) return row;
+
+  const adjusted = row.slice();
+  adjusted[pathIndex] = remapped;
+  return adjusted;
+}
+
+/**
+ * Duplicate detection looks rows up by their identity columns once per
+ * incoming row. Several of those column sets carry no index in the JW Library
+ * schema - BlockRange's especially - which turns each lookup into a full table
+ * scan and a merge of two real backups into minutes of work. Index them for
+ * the duration of the merge and drop the indexes again afterwards, so the
+ * database that ships still matches the schema JW Library wrote.
+ */
+function createIdentityIndexes(targetDb) {
+  const created = [];
+
+  for (const [tableName, keySets] of Object.entries(IDENTITY_KEYS)) {
+    const columns = new Set(getColumns(targetDb, tableName).map(col => col.name));
+    if (!columns.size) continue;
+
+    keySets.forEach((keySet, index) => {
+      if (keySet.cols.some(col => !columns.has(col))) return;
+
+      const indexName = `jwlmerge_tmp_${tableName}_${index}`;
+      try {
+        targetDb.exec(
+          `CREATE INDEX IF NOT EXISTS ${quoteIdent(indexName)} ON ${quoteIdent(tableName)} ` +
+            `(${keySet.cols.map(quoteIdent).join(',')})`
+        );
+        created.push(indexName);
+      } catch (error) {
+        console.warn(`Could not index ${tableName} for duplicate detection:`, error.message);
+      }
+    });
+  }
+
+  return created;
+}
+
+function dropIndexes(targetDb, indexNames) {
+  for (const indexName of indexNames) {
+    try {
+      targetDb.exec(`DROP INDEX IF EXISTS ${quoteIdent(indexName)}`);
+    } catch (error) {
+      console.warn(`Could not drop temporary index ${indexName}:`, error.message);
+    }
+  }
+}
+
+function nextAvailableId(targetDb, tableName, idColumn) {
+  const maxId = scalar(targetDb, `SELECT MAX(${quoteIdent(idColumn)}) FROM ${quoteIdent(tableName)}`);
+  return (maxId === null || maxId === undefined ? 0 : maxId) + 1;
+}
+
+/**
+ * LastModified holds one timestamp describing the whole backup. Accumulating a
+ * row per source leaves a table JW Library reads a single value from.
+ */
+function writeLastModified(targetDb, sourceDatabases) {
+  let latest = null;
+
+  for (const database of sourceDatabases) {
+    try {
+      const value = scalar(database.db, 'SELECT MAX(LastModified) FROM LastModified');
+      if (value && (latest === null || value > latest)) latest = value;
+    } catch (error) {
+      console.warn(`Could not read LastModified from ${database.name}:`, error.message);
+    }
+  }
+
+  try {
+    targetDb.exec('DELETE FROM LastModified');
+    targetDb.exec('INSERT INTO LastModified (LastModified) VALUES (?)', [
+      latest || new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+    ]);
+  } catch (error) {
+    console.warn('Could not write LastModified:', error.message);
+  }
+}
+
+/**
+ * Drop or detach rows whose foreign keys do not resolve. A reference that
+ * survived unmapped - because its data type was excluded, or its target could
+ * not be merged - makes JW Library reject the whole backup.
+ */
+function removeDanglingRecords(targetDb) {
+  const summary = { deleted: 0, detached: 0 };
+
+  // Deleting a row can orphan rows that reference it, and the rule covering
+  // those may already have run. Repeat until a pass changes nothing.
+  for (let pass = 0; pass < 10; pass++) {
+    const before = summary.deleted + summary.detached;
+    danglingPass(targetDb, summary);
+    if (summary.deleted + summary.detached === before) break;
+  }
+
+  return summary;
+}
+
+function danglingPass(targetDb, summary) {
+  const idColumnFor = table => {
+    const columns = getColumns(targetDb, table);
+    const pk = columns.filter(col => col.pk > 0);
+    return pk.length === 1 ? pk[0].name : null;
+  };
+
+  for (const [tableName, relations] of Object.entries(FOREIGN_KEYS)) {
+    const columns = getColumns(targetDb, tableName);
+    if (!columns.length) continue;
+
+    for (const [columnName, referencedTable] of Object.entries(relations)) {
+      const column = columns.find(col => col.name === columnName);
+      if (!column) continue;
+
+      const referencedId = idColumnFor(referencedTable);
+      if (!referencedId) continue;
+
+      const dangling =
+        `${quoteIdent(columnName)} IS NOT NULL AND NOT EXISTS ` +
+        `(SELECT 1 FROM ${quoteIdent(referencedTable)} t WHERE t.${quoteIdent(referencedId)} = ` +
+        `${quoteIdent(tableName)}.${quoteIdent(columnName)})`;
+
+      try {
+        const affected = scalar(
+          targetDb,
+          `SELECT COUNT(*) FROM ${quoteIdent(tableName)} WHERE ${dangling}`
+        );
+        if (!affected) continue;
+
+        if (column.notNull) {
+          // The row cannot exist without its target.
+          targetDb.exec(`DELETE FROM ${quoteIdent(tableName)} WHERE ${dangling}`);
+          summary.deleted += affected;
+          console.warn(`Removed ${affected} ${tableName} row(s) referencing a missing ${referencedTable}`);
+        } else {
+          // Optional link: keep the record, drop the broken reference.
+          targetDb.exec(
+            `UPDATE ${quoteIdent(tableName)} SET ${quoteIdent(columnName)} = NULL WHERE ${dangling}`
+          );
+          summary.detached += affected;
+          console.warn(`Cleared ${affected} ${tableName}.${columnName} reference(s) to a missing ${referencedTable}`);
+        }
+      } catch (error) {
+        console.warn(`Could not clean ${tableName}.${columnName}:`, error.message);
+      }
+    }
   }
 }
 
 // Data integrity validation function
-function validateMergeIntegrity(targetDb) {
-  console.log('\n=== POST-MERGE DATA INTEGRITY VALIDATION ===');
-  
-  try {
-    // 1. Check for orphaned UserMarks
-    const orphanedUserMarks = targetDb.exec(`
-      SELECT COUNT(*) FROM UserMark u 
-      LEFT JOIN Location l ON u.LocationId = l.LocationId 
-      WHERE l.LocationId IS NULL
-    `);
-    
-    const orphanedCount = orphanedUserMarks.length > 0 ? orphanedUserMarks[0].values[0][0] : 0;
-    if (orphanedCount > 0) {
-      console.error(`🚨 CRITICAL: Found ${orphanedCount} orphaned UserMarks with missing Location references!`);
-      
-      // Get details of orphaned UserMarks
-      const orphanedDetails = targetDb.exec(`
-        SELECT u.UserMarkId, u.LocationId FROM UserMark u 
-        LEFT JOIN Location l ON u.LocationId = l.LocationId 
-        WHERE l.LocationId IS NULL
-        LIMIT 10
-      `);
-      if (orphanedDetails.length > 0) {
-        console.error('   Sample orphaned UserMarks:');
-        orphanedDetails[0].values.forEach(row => {
-          console.error(`     UserMarkId: ${row[0]}, missing LocationId: ${row[1]}`);
-        });
-      }
-    } else {
-      console.log('✅ No orphaned UserMarks found');
-    }
-    
-    // 2. Check for orphaned Notes
-    const orphanedNotes = targetDb.exec(`
-      SELECT COUNT(*) FROM Note n 
-      LEFT JOIN Location l ON n.LocationId = l.LocationId 
-      WHERE n.LocationId IS NOT NULL AND l.LocationId IS NULL
-    `);
-    
-    const orphanedNotesCount = orphanedNotes.length > 0 ? orphanedNotes[0].values[0][0] : 0;
-    if (orphanedNotesCount > 0) {
-      console.error(`🚨 CRITICAL: Found ${orphanedNotesCount} orphaned Notes with missing Location references!`);
-    } else {
-      console.log('✅ No orphaned Notes found');
-    }
-    
-    // 3. Verify Location content integrity using the same constraint handler logic
-    const duplicateLocations = targetDb.exec(`
-      WITH LocationConstraints AS (
-        SELECT LocationId,
-               CASE 
-                 WHEN Type = 0 AND BookNumber IS NOT NULL AND BookNumber != 0 AND ChapterNumber IS NOT NULL AND ChapterNumber != 0 THEN
-                   -- Type 0 Bible chapter - UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type)
-                   BookNumber || '|' || ChapterNumber || '|' || COALESCE(KeySymbol, 'NULL') || '|' || 
-                   CASE WHEN MepsLanguage IS NULL OR MepsLanguage = 0 THEN '0' ELSE MepsLanguage END || '|' || Type
-                 ELSE
-                   -- Type 1 OR Type 0 Publication - UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type)
-                   COALESCE(KeySymbol, 'NULL') || '|' || COALESCE(IssueTagNumber, 'NULL') || '|' || 
-                   CASE WHEN MepsLanguage IS NULL OR MepsLanguage = 0 THEN '0' ELSE MepsLanguage END || '|' || 
-                   COALESCE(DocumentId, 'NULL') || '|' || COALESCE(Track, 'NULL') || '|' || Type
-               END as ConstraintSignature
-        FROM Location
-      )
-      SELECT ConstraintSignature, COUNT(*) as count
-      FROM LocationConstraints
-      GROUP BY ConstraintSignature
-      HAVING COUNT(*) > 1
-    `);
-    
-    if (duplicateLocations.length > 0 && duplicateLocations[0].values.length > 0) {
-      console.error(`🚨 CRITICAL: Found ${duplicateLocations[0].values.length} duplicate Location entries that should have been merged!`);
-      duplicateLocations[0].values.forEach(row => {
-        const [constraintSignature, count] = row;
-        console.error(`  - Duplicate constraint signature: ${constraintSignature} (${count} entries)`);
-      });
-    } else {
-      console.log('✅ No duplicate Location content found (constraint-aware merge successful)');
-    }
-    
-    // 4. Count statistics
-    const locationCount = targetDb.exec('SELECT COUNT(*) FROM Location');
-    const userMarkCount = targetDb.exec('SELECT COUNT(*) FROM UserMark');
-    const noteCount = targetDb.exec('SELECT COUNT(*) FROM Note');
-    
-    console.log('\n📊 Merge Statistics:');
-    console.log(`   Locations: ${locationCount[0].values[0][0]}`);
-    console.log(`   UserMarks: ${userMarkCount[0].values[0][0]}`);
-    console.log(`   Notes: ${noteCount[0].values[0][0]}`);
-    
-    // 5. Check ID mapping statistics
-    let totalMappings = 0;
-    idMappings.forEach((mappingMap, tableName) => {
-      const mappingCount = mappingMap.size;
-      if (mappingCount > 0) {
-        totalMappings += mappingCount;
-        console.log(`   ID Mappings for ${tableName}: ${mappingCount}`);
-      }
-    });
-    console.log(`   Total ID Mappings Created: ${totalMappings}`);
-    
-    console.log('=== VALIDATION COMPLETE ===\n');
-    
-    return {
-      orphanedUserMarks: orphanedCount,
-      orphanedNotes: orphanedNotesCount,
-      duplicateLocations: duplicateLocations.length > 0 ? duplicateLocations[0].values.length : 0,
-      totalMappings
-    };
-    
-  } catch (error) {
-    console.error('❌ Error during integrity validation:', error.message);
-    return null;
-  }
-}
-
-// Update foreign key references based on ID mappings
-function updateForeignKeyReferences(row, tableName, columnNames, targetDb, sourceDb = null) {
-  // Define foreign key relationships
-  const foreignKeyMappings = {
-    'BlockRange': { 'UserMarkId': 'UserMark' },
-    'UserMark': { 'LocationId': 'Location' },
-    'Note': { 'UserMarkId': 'UserMark', 'LocationId': 'Location' },
-    'PlaylistItem': { 'PlaylistItemAccuracyId': 'PlaylistItemAccuracy', 'IndependentMediaId': 'IndependentMedia' },
-    'TagMap': { 'TagId': 'Tag', 'PlaylistItemId': 'PlaylistItem', 'LocationId': 'Location', 'NoteId': 'Note' },
-    'Bookmark': { 'LocationId': 'Location' },
-    'PlaylistItemMarker': { 'PlaylistItemId': 'PlaylistItem' },
-    'PlaylistItemLocationMap': { 'PlaylistItemId': 'PlaylistItem', 'LocationId': 'Location' },
-    'PlaylistItemIndependentMediaMap': { 'PlaylistItemId': 'PlaylistItem', 'IndependentMediaId': 'IndependentMedia' },
-    'PlaylistItemMarkerBibleVerseMap': { 'PlaylistItemMarkerId': 'PlaylistItemMarker' },
-    'PlaylistItemMarkerParagraphMap': { 'PlaylistItemMarkerId': 'PlaylistItemMarker' }
+function validateMergeIntegrity(targetDb, cleanup) {
+  const results = {
+    orphanedReferences: 0,
+    duplicateLocations: 0,
+    totalMappings: countIdMappings(),
+    removedRows: cleanup ? cleanup.deleted : 0,
+    detachedReferences: cleanup ? cleanup.detached : 0,
+    counts: {},
   };
-  
-  const fkRelations = foreignKeyMappings[tableName];
-  if (!fkRelations) return row;
-  
-  return row.map((value, index) => {
-    const columnName = columnNames[index];
-    const referencedTable = fkRelations[columnName];
-    
-    if (referencedTable && value !== null) {
-      // FIRST: Check for source-specific mappings (highest priority for conflict resolution)
-      if (sourceDb && sourceSpecificMappings.has(sourceDb)) {
-        const sourceMap = sourceSpecificMappings.get(sourceDb);
-        if (sourceMap.has(referencedTable)) {
-          const mapping = sourceMap.get(referencedTable);
-          const newId = mapping.get(value);
-          
-          if (newId !== undefined) {
-            // We have a source-specific mapping - use it (highest priority)
-            console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (${sourceDb} ${referencedTable} mapping)`);
-            return newId;
-          }
-        }
-      }
-      
-      // SECOND: Check for global ID mappings - mappings represent correct semantic linkage
-      if (idMappings.has(referencedTable)) {
-        const mapping = idMappings.get(referencedTable);
-        const newId = mapping.get(value);
-        
-        if (newId !== undefined) {
-          // We have a global mapping for this ID - use it
-          if (referencedTable === 'Location') {
-            console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (Location mapping)`);
-          } else {
-            console.log(`🔗 FK Update: ${tableName}.${columnName} ${value} → ${newId} (${referencedTable})`);
-          }
-          return newId;
-        }
-      }
-      
-      // No mapping found - check if original ID exists (and is valid)
-      const idColumn = referencedTable === 'UserMark' ? 'UserMarkId' : 
-                      referencedTable === 'Note' ? 'NoteId' :
-                      referencedTable === 'Tag' ? 'TagId' :
-                      referencedTable === 'PlaylistItem' ? 'PlaylistItemId' :
-                      referencedTable === 'Location' ? 'LocationId' :
-                      referencedTable === 'PlaylistItemMarker' ? 'PlaylistItemMarkerId' :
-                      referencedTable === 'PlaylistItemAccuracy' ? 'PlaylistItemAccuracyId' :
-                      referencedTable === 'IndependentMedia' ? 'IndependentMediaId' :
-                      `${referencedTable}Id`;
-      
-      try {
-        const existsQuery = `SELECT COUNT(*) FROM ${referencedTable} WHERE ${idColumn} = ?`;
-        const existsResult = targetDb.exec(existsQuery, [value]);
-        const originalIdExists = existsResult.length > 0 && existsResult[0].values[0][0] > 0;
-        
-        if (originalIdExists) {
-          // Original ID exists and no mapping needed, keep it as-is
-          return value;
-        } else {
-          // Original ID doesn't exist and no mapping available - orphaned reference
-          console.warn(`⚠️ Orphaned FK reference: ${tableName}.${columnName} = ${value} (${referencedTable} not found)`);
-          return value; // Keep original value but it will be orphaned
-        }
-      } catch (error) {
-        console.warn(`Error checking FK reference existence:`, error.message);
-        return value;
-      }
-    }
-    
-    return value;
-  });
-}
 
-// Holistic Location merge with two-phase approach:
-// Phase 1: Global duplicate detection across ALL databases
-// Phase 2: Insert unique content with proper ID conflict resolution
-async function mergeLocationData(targetDb, sourceDatabases, mergeConfig) {
   try {
-    console.log('🔄 Starting constraint-aware Location merge with global duplicate detection...');
-    console.log('✨ CONSTRAINT-AWARE MERGE v2.12 - Fixed global mapping creation for source-specific conflicts!');
-    
-    // PHASE 1: Collect ALL locations from ALL databases
-    const allLocations = [];
-    const globalContentMap = new Map(); // content signature -> first occurrence info
-    
-    for (const database of sourceDatabases) {
-      const sourceDb = database.db;
-      
-      try {
-        const data = sourceDb.exec('SELECT * FROM Location ORDER BY LocationId');
-        
-        if (!data.length || !data[0].values) {
-          console.log(`📋 No Location data in ${database.name}`);
-          continue;
-        }
-        
-        // Get column names
-        const columns = sourceDb.exec('PRAGMA table_info(Location)');
-        const columnNames = columns[0].values.map(col => col[1]);
-        
-        console.log(`📍 Found ${data[0].values.length} locations in ${database.name}`);
-        
-        for (const row of data[0].values) {
-          const locationInfo = {
-            row,
-            columnNames,
-            sourceDb: database.name,
-            originalLocationId: row[columnNames.indexOf('LocationId')]
-          };
-          
-          // Create content signature using proper unique constraint logic
-          // The Location table has two unique constraints that must be respected:
-          // 1. UNIQUE(BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type) - for Bible chapters
-          // 2. UNIQUE(KeySymbol, IssueTagNumber, MepsLanguage, DocumentId, Track, Type) - for publications/documents
-          const contentSignature = createLocationConstraintSignature(row, columnNames);
-          
-          locationInfo.contentSignature = contentSignature;
-          allLocations.push(locationInfo);
-          
-          // Track first occurrence of each unique content
-          if (!globalContentMap.has(contentSignature)) {
-            globalContentMap.set(contentSignature, locationInfo);
-          }
-        }
-      } catch (error) {
-        console.warn(`⚠ Warning: Could not read Location table from ${database.name}:`, error.message);
-      }
-    }
-    
-    console.log(`📊 Global analysis: ${allLocations.length} total locations, ${globalContentMap.size} unique content signatures`);
-    
-    // PHASE 2: Insert unique content and create mappings for duplicates
-    const usedLocationIds = new Set();
-    let insertedCount = 0;
-    let duplicateCount = 0;
-    
-    for (const locationInfo of allLocations) {
-      const { row, columnNames, sourceDb, originalLocationId, contentSignature } = locationInfo;
-      const firstOccurrence = globalContentMap.get(contentSignature);
-      
-      if (firstOccurrence !== locationInfo) {
-        // This is a duplicate - map to the first occurrence's final ID
-        const firstOccurrenceId = firstOccurrence.finalLocationId || firstOccurrence.originalLocationId;
-        
-        // Only create ID mapping if the IDs are actually different
-        if (originalLocationId !== firstOccurrenceId) {
-          // CRITICAL: Create source-specific mapping for duplicates
-          // This ensures foreign keys from this source DB follow their content to the correct final ID
-          trackIdMapping('Location', originalLocationId, firstOccurrenceId, sourceDb);
-        }
-        
-        const keySymbol = row[columnNames.indexOf('KeySymbol')] || 'NULL';
-        console.log(`  🔗 Duplicate ${keySymbol} location: ${originalLocationId} (${sourceDb}) → ${firstOccurrenceId}`);
-        duplicateCount++;
-      } else {
-        // This is the first occurrence - insert it with ID conflict resolution
-        const idColumnIndex = columnNames.indexOf('LocationId');
-        let finalLocationId = originalLocationId;
-        let adjustedRow = [...row];
-        
-        // Check for ID conflicts with previously inserted locations
-        if (usedLocationIds.has(originalLocationId)) {
-          // Find next available ID
-          let newLocationId = originalLocationId;
-          while (usedLocationIds.has(newLocationId)) {
-            newLocationId++;
-          }
-          
-          finalLocationId = newLocationId;
-          adjustedRow[idColumnIndex] = newLocationId;
-          
-          console.log(`  ⚠️ LocationId conflict: ${originalLocationId} → ${newLocationId} (${sourceDb})`);
-          
-          // CRITICAL: Create source-specific mapping for ID conflicts
-          // This ensures foreign keys from this source DB follow their content to the new ID
-          trackIdMapping('Location', originalLocationId, newLocationId, sourceDb);
-        }
-        
-        // Insert the location
-        try {
-          const columnNamesCsv = columnNames.join(',');
-          const placeholders = columnNames.map(() => '?').join(',');
-          const insertQuery = `INSERT INTO Location (${columnNamesCsv}) VALUES (${placeholders})`;
-          
-          targetDb.exec(insertQuery, adjustedRow);
-          
-          // Track this ID as used
-          usedLocationIds.add(finalLocationId);
-          
-          // Store final ID back to first occurrence for duplicate mapping
-          firstOccurrence.finalLocationId = finalLocationId;
-          
-          // Create source-specific mapping if ID was changed (for collision resolution)
-          if (finalLocationId !== originalLocationId) {
-            trackIdMapping('Location', originalLocationId, finalLocationId, sourceDb);
-          }
-          
-          const keySymbol = row[columnNames.indexOf('KeySymbol')] || 'NULL';
-          console.log(`  ✅ Inserted ${keySymbol} location: ${originalLocationId} as ${finalLocationId} (${sourceDb})`);
-          insertedCount++;
-          
-        } catch (error) {
-          console.error(`❌ Failed to insert Location ${originalLocationId} from ${sourceDb}:`, error.message);
-          throw error;
-        }
-      }
-    }
-    
-    console.log(`✅ Semantic Location merge complete: ${insertedCount} inserted, ${duplicateCount} duplicates mapped`);
-    
-  } catch (error) {
-    console.error('❌ Error in semantic mergeLocationData:', error);
-    throw error;
-  }
-}
+    // Every declared foreign key must resolve.
+    for (const [tableName, relations] of Object.entries(FOREIGN_KEYS)) {
+      const columns = getColumns(targetDb, tableName);
+      if (!columns.length) continue;
 
-// REMOVED: Old KeySymbol-based function replaced by holistic two-phase merge in mergeLocationData
+      for (const [columnName, referencedTable] of Object.entries(relations)) {
+        if (!columns.some(col => col.name === columnName)) continue;
 
-// Merge data from multiple databases into target table
-async function mergeTableData(targetDb, sourceDatabases, tableName, mergeConfig) {
-  // Location table is handled by specialized mergeLocationData function
-  if (tableName === 'Location') {
-    console.log('⚠️ Location table should be processed by mergeLocationData, skipping general merge');
-    return;
-  }
-  
-  try {
-    // Get column information
-    const firstDb = sourceDatabases[0].db;
-    const columns = firstDb.exec(`PRAGMA table_info(${tableName})`);
-    
-    if (!columns.length || !columns[0].values) {
-      return; // Skip empty tables
-    }
-    
-    const columnNames = columns[0].values.map(col => col[1]); // col[1] is column name
-    
-    // Find ID column by name patterns
-    const idColumnIndex = columnNames.findIndex(name => 
-      name === 'Id' || name.endsWith('Id') || name === `${tableName}Id`
-    );
-    const hasId = idColumnIndex !== -1;
-    
-    let idOffset = 0;
-    
-    // Track next available ID for GUID/composite tables to avoid assigning same ID to multiple conflicts
-    let nextAvailableId = null;
-    if (hasId && isGuidOrCompositeUniqueTable(tableName)) {
-      const maxIdQuery = `SELECT MAX(${columnNames[idColumnIndex]}) FROM ${tableName}`;
-      const maxResult = targetDb.exec(maxIdQuery);
-      const maxId = maxResult.length > 0 && maxResult[0].values.length > 0 ? maxResult[0].values[0][0] : 0;
-      nextAvailableId = (maxId || 0) + 1;
-    }
-    
-    // Process each source database
-    for (const sourceDb of sourceDatabases) {
-      try {
-        // Get all data from this table
-        const data = sourceDb.db.exec(`SELECT * FROM ${tableName}`);
-        
-        if (!data.length || !data[0].values) {
-          continue; // Skip empty tables
+        const referencedColumns = getColumns(targetDb, referencedTable).filter(col => col.pk > 0);
+        if (referencedColumns.length !== 1) continue;
+
+        const orphaned = scalar(
+          targetDb,
+          `SELECT COUNT(*) FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(columnName)} IS NOT NULL ` +
+            `AND NOT EXISTS (SELECT 1 FROM ${quoteIdent(referencedTable)} t ` +
+            `WHERE t.${quoteIdent(referencedColumns[0].name)} = ${quoteIdent(tableName)}.${quoteIdent(columnName)})`
+        );
+
+        if (orphaned) {
+          results.orphanedReferences += orphaned;
+          console.error(`${orphaned} ${tableName}.${columnName} reference(s) point at a missing ${referencedTable}`);
         }
-        
-        // Insert data with proper duplicate handling
-        for (const row of data[0].values) {
-          let adjustedRow = row;
-          
-          // FIRST: Check for content-based duplicates before any ID processing
-          // This prevents creating unnecessary ID mappings for content duplicates
-          
-          // Special handling for Tag content-based duplicates
-          if (tableName === 'Tag') {
-            const typeIndex = columnNames.indexOf('Type');
-            const nameIndex = columnNames.indexOf('Name');
-            
-            if (typeIndex !== -1 && nameIndex !== -1) {
-              const type = row[typeIndex];
-              const name = row[nameIndex];
-              
-              // Check if this Tag content already exists (Type + Name composite)
-              try {
-                const existing = targetDb.exec(`SELECT TagId FROM Tag WHERE Type = ? AND Name = ?`, [type, name]);
-                if (existing.length > 0 && existing[0].values[0]) {
-                  const existingTagId = existing[0].values[0][0];
-                  const originalTagId = row[idColumnIndex];
-                  
-                  // Create ID mapping from original ID to existing ID
-                  trackIdMapping(tableName, originalTagId, existingTagId);
-                  console.log(`Skipping duplicate Tag: Type=${type}, Name="${name}" (mapping ${originalTagId} -> ${existingTagId})`);
-                  continue; // Skip this row entirely - ID mapping created
-                }
-              } catch (error) {
-                console.warn(`Error checking Tag duplicate:`, error.message);
-              }
-            }
-          }
-          
-          // NOTE: Location table is handled by specialized mergeLocationData function
-          // No Location-specific processing needed here
-          
-          // SECOND: Handle ID conflicts for non-duplicate content
-          if (hasId) {
-            if (isGuidOrCompositeUniqueTable(tableName)) {
-              // For GUID tables, check for ID conflicts and reassign if needed
-              const originalId = row[idColumnIndex];
-              const checkQuery = `SELECT COUNT(*) FROM ${tableName} WHERE ${columnNames[idColumnIndex]} = ?`;
-              try {
-                const existing = targetDb.exec(checkQuery, [originalId]);
-                if (existing.length > 0 && existing[0].values[0][0] > 0) {
-                  // ID conflict detected, find truly next available ID
-                  let newId = nextAvailableId;
-                  
-                  // For GUID-based tables, double-check ID availability to prevent silent failures
-                  let attempts = 0;
-                  while (attempts < 1000) { // Prevent infinite loops
-                    const checkNewIdQuery = `SELECT COUNT(*) FROM ${tableName} WHERE ${columnNames[idColumnIndex]} = ?`;
-                    const newIdCheck = targetDb.exec(checkNewIdQuery, [newId]);
-                    if (newIdCheck.length === 0 || newIdCheck[0].values[0][0] === 0) {
-                      break; // ID is available
-                    }
-                    newId++; // Try next ID
-                    attempts++;
-                  }
-                  
-                  if (attempts >= 1000) {
-                    console.error(`❌ Could not find available ID for ${tableName} after 1000 attempts, starting from ${nextAvailableId}`);
-                  }
-                  
-                  nextAvailableId = newId + 1; // Update for next potential conflict
-                  
-                  // Enhanced logging for ID conflict resolution
-                  if (tableName === 'Location') {
-                    const locationDescription = getLocationDescription(row, columnNames);
-                    console.log(`⚠ LocationId conflict detected: ${originalId} already exists`);
-                    console.log(`  Content: ${locationDescription}`);
-                    console.log(`  Assigning new ID: ${originalId} → ${newId}`);
-                  } else if (tableName === 'UserMark') {
-                    console.log(`⚠ UserMark ID conflict: ${originalId} → ${newId} (attempting robust ID assignment)`);
-                  } else {
-                    console.log(`⚠ ${tableName} ID conflict: ${originalId} → ${newId}`);
-                  }
-                  
-                  // Don't create ID mapping yet - wait until after successful insert
-                  adjustedRow = row.map((value, index) => 
-                    index === idColumnIndex ? newId : value
-                  );
-                  // Store the mapping info to create after successful insert
-                  adjustedRow._pendingIdMapping = { tableName, originalId, newId };
-                } else {
-                  adjustedRow = row; // No conflict, use original
-                  if (tableName === 'Location') {
-                    const locationDescription = getLocationDescription(row, columnNames);
-                    console.log(`✓ No conflict for Location ${originalId}: ${locationDescription}`);
-                  }
-                }
-              } catch (error) {
-                console.warn(`✗ Error checking ID conflict for ${tableName}:`, error.message);
-                adjustedRow = row;
-              }
-            } else {
-              // For simple ID tables, apply offset to avoid conflicts
-              adjustedRow = row.map((value, index) => 
-                index === idColumnIndex ? value + idOffset : value
-              );
-            }
-          }
-          
-          // Special handling for UserMark GUID-based duplicates
-          if (tableName === 'UserMark') {
-            const userMarkGuidIndex = columnNames.indexOf('UserMarkGuid');
-            
-            if (userMarkGuidIndex !== -1) {
-              const userMarkGuid = row[userMarkGuidIndex];
-              
-              // Check if this UserMark GUID already exists
-              try {
-                const existing = targetDb.exec(`SELECT UserMarkId FROM UserMark WHERE UserMarkGuid = ?`, [userMarkGuid]);
-                if (existing.length > 0 && existing[0].values[0]) {
-                  const existingUserMarkId = existing[0].values[0][0];
-                  console.log(`Skipping duplicate UserMark GUID: ${userMarkGuid} (already exists as UserMarkId ${existingUserMarkId})`);
-                  continue; // Skip this row entirely - duplicate detected
-                }
-              } catch (error) {
-                console.warn(`Error checking UserMark duplicate:`, error.message);
-              }
-            }
-          }
-          
-          // Special handling for Note GUID-based duplicates
-          if (tableName === 'Note') {
-            const noteGuidIndex = columnNames.indexOf('Guid');
-            
-            if (noteGuidIndex !== -1) {
-              const noteGuid = row[noteGuidIndex];
-              
-              // Check if this Note GUID already exists
-              try {
-                const existing = targetDb.exec(`SELECT NoteId FROM Note WHERE Guid = ?`, [noteGuid]);
-                if (existing.length > 0 && existing[0].values[0]) {
-                  const existingNoteId = existing[0].values[0][0];
-                  console.log(`Skipping duplicate Note GUID: ${noteGuid} (already exists as NoteId ${existingNoteId})`);
-                  continue; // Skip this row entirely - duplicate detected
-                }
-              } catch (error) {
-                console.warn(`Error checking Note duplicate:`, error.message);
-              }
-            }
-          }
-          
-          // Special handling for PlaylistItem content-based duplicates (Label + ThumbnailFilePath)
-          if (tableName === 'PlaylistItem') {
-            const labelIndex = columnNames.indexOf('Label');
-            const thumbnailFilePathIndex = columnNames.indexOf('ThumbnailFilePath');
-            
-            if (labelIndex !== -1) {
-              const label = row[labelIndex];
-              const thumbnailFilePath = thumbnailFilePathIndex !== -1 ? row[thumbnailFilePathIndex] : null;
-              
-              // Check if this Label + ThumbnailFilePath combination already exists (JWLMerge logic)
-              const checkQuery = `SELECT PlaylistItemId FROM PlaylistItem WHERE Label = ? AND ThumbnailFilePath ${thumbnailFilePath === null ? 'IS NULL' : '= ?'}`;
-              const checkParams = [label];
-              if (thumbnailFilePath !== null) checkParams.push(thumbnailFilePath);
-              
-              try {
-                const existing = targetDb.exec(checkQuery, checkParams);
-                if (existing.length > 0 && existing[0].values[0]) {
-                  const existingPlaylistItemId = existing[0].values[0][0];
-                  const originalPlaylistItemId = row[idColumnIndex];
-                  
-                  // Create ID mapping from original ID to existing ID
-                  trackIdMapping(tableName, originalPlaylistItemId, existingPlaylistItemId);
-                  console.log(`Skipping duplicate PlaylistItem: Label="${label}", ThumbnailFilePath="${thumbnailFilePath}" (mapping ${originalPlaylistItemId} -> ${existingPlaylistItemId})`);
-                  continue; // Skip this row entirely - duplicate detected
-                }
-              } catch (error) {
-                console.warn(`Error checking PlaylistItem duplicate:`, error.message);
-              }
-            }
-          }
-          
-          // Special handling for IndependentMedia FilePath-based duplicates
-          if (tableName === 'IndependentMedia') {
-            const filePathIndex = columnNames.indexOf('FilePath');
-            
-            if (filePathIndex !== -1) {
-              const filePath = row[filePathIndex];
-              
-              // Check if this FilePath already exists
-              try {
-                const existing = targetDb.exec(`SELECT IndependentMediaId FROM IndependentMedia WHERE FilePath = ?`, [filePath]);
-                if (existing.length > 0 && existing[0].values[0]) {
-                  const existingId = existing[0].values[0][0];
-                  const originalId = row[idColumnIndex];
-                  
-                  // Create ID mapping from original ID to existing ID
-                  trackIdMapping(tableName, originalId, existingId);
-                  console.log(`Skipping duplicate IndependentMedia FilePath: ${filePath} (mapping ${originalId} -> ${existingId})`);
-                  continue; // Skip this row entirely - duplicate detected
-                }
-              } catch (error) {
-                console.warn(`Error checking IndependentMedia duplicate:`, error.message);
-              }
-            }
-          }
-          
-          // Special handling for PlaylistItemAccuracy Description-based duplicates
-          if (tableName === 'PlaylistItemAccuracy') {
-            const descriptionIndex = columnNames.indexOf('Description');
-            
-            if (descriptionIndex !== -1) {
-              const description = row[descriptionIndex];
-              
-              // Check if this Description already exists (UNIQUE constraint)
-              try {
-                const existing = targetDb.exec(`SELECT PlaylistItemAccuracyId FROM PlaylistItemAccuracy WHERE Description = ?`, [description]);
-                if (existing.length > 0 && existing[0].values[0]) {
-                  const existingId = existing[0].values[0][0];
-                  const originalId = row[idColumnIndex];
-                  
-                  // Create ID mapping from original ID to existing ID
-                  trackIdMapping(tableName, originalId, existingId);
-                  console.log(`Skipping duplicate PlaylistItemAccuracy Description: "${description}" (mapping ${originalId} -> ${existingId})`);
-                  continue; // Skip this row entirely - duplicate detected
-                }
-              } catch (error) {
-                console.warn(`Error checking PlaylistItemAccuracy duplicate:`, error.message);
-              }
-            }
-          }
-          
-          // Special handling for Bookmark composite unique constraints
-          if (tableName === 'Bookmark') {
-            const locationIdIndex = columnNames.indexOf('LocationId');
-            const publicationLocationIdIndex = columnNames.indexOf('PublicationLocationId');
-            
-            if (locationIdIndex !== -1 && publicationLocationIdIndex !== -1) {
-              let locationId = adjustedRow[locationIdIndex];
-              let publicationLocationId = adjustedRow[publicationLocationIdIndex];
-              
-              // Apply any Location ID mappings
-              if (idMappings.has('Location')) {
-                if (idMappings.get('Location').has(locationId)) {
-                  const mappedLocationId = idMappings.get('Location').get(locationId);
-                  adjustedRow[locationIdIndex] = mappedLocationId;
-                  locationId = mappedLocationId;
-                  console.log(`Applied Location ID mapping in Bookmark: ${locationId} → ${mappedLocationId}`);
-                }
-                if (idMappings.get('Location').has(publicationLocationId)) {
-                  const mappedPubLocationId = idMappings.get('Location').get(publicationLocationId);
-                  adjustedRow[publicationLocationIdIndex] = mappedPubLocationId;
-                  publicationLocationId = mappedPubLocationId;
-                  console.log(`Applied Publication Location ID mapping in Bookmark: ${publicationLocationId} → ${mappedPubLocationId}`);
-                }
-              }
-              
-              // Check if this LocationId + PublicationLocationId combination already exists
-              try {
-                const existing = targetDb.exec(`SELECT COUNT(*) FROM Bookmark WHERE LocationId = ? AND PublicationLocationId = ?`, [locationId, publicationLocationId]);
-                if (existing.length > 0 && existing[0].values[0][0] > 0) {
-                  console.log(`Skipping duplicate Bookmark: LocationId=${locationId}, PublicationLocationId=${publicationLocationId}`);
-                  continue; // Skip this row entirely - duplicate detected
-                }
-              } catch (error) {
-                console.warn(`Error checking Bookmark duplicate:`, error.message);
-              }
-            }
-          }
-          
-          // Special handling for PlaylistItemMarker foreign key updates
-          if (tableName === 'PlaylistItemMarker') {
-            const playlistItemIdIndex = columnNames.indexOf('PlaylistItemId');
-            
-            if (playlistItemIdIndex !== -1) {
-              const playlistItemId = adjustedRow[playlistItemIdIndex];
-              
-              // Apply any PlaylistItem ID mappings
-              if (idMappings.has('PlaylistItem') && idMappings.get('PlaylistItem').has(playlistItemId)) {
-                const mappedPlaylistItemId = idMappings.get('PlaylistItem').get(playlistItemId);
-                adjustedRow[playlistItemIdIndex] = mappedPlaylistItemId;
-                console.log(`Applied PlaylistItem ID mapping in PlaylistItemMarker: ${playlistItemId} → ${mappedPlaylistItemId}`);
-              }
-            }
-          }
-          
-          // Special handling for TagMap unique constraints
-          if (tableName === 'TagMap') {
-            const tagIdIndex = columnNames.indexOf('TagId');
-            const locationIdIndex = columnNames.indexOf('LocationId');
-            const noteIdIndex = columnNames.indexOf('NoteId');
-            const positionIndex = columnNames.indexOf('Position');
-            
-            if (tagIdIndex !== -1) {
-              const tagId = adjustedRow[tagIdIndex];
-              const locationId = adjustedRow[locationIdIndex];
-              const noteId = adjustedRow[noteIdIndex];
-              const position = adjustedRow[positionIndex];
-              
-              // Check TagId_Position constraint
-              if (position !== null) {
-                try {
-                  const positionCheck = targetDb.exec(`SELECT COUNT(*) FROM TagMap WHERE TagId = ? AND Position = ?`, [tagId, position]);
-                  if (positionCheck.length > 0 && positionCheck[0].values[0][0] > 0) {
-                    console.log(`Skipping duplicate TagMap: TagId=${tagId}, Position=${position}`);
-                    continue;
-                  }
-                } catch (error) {
-                  console.warn(`Error checking TagMap Position constraint:`, error.message);
-                }
-              }
-              
-              // Check TagId_LocationId constraint
-              if (locationId !== null) {
-                try {
-                  const locationCheck = targetDb.exec(`SELECT COUNT(*) FROM TagMap WHERE TagId = ? AND LocationId = ?`, [tagId, locationId]);
-                  if (locationCheck.length > 0 && locationCheck[0].values[0][0] > 0) {
-                    console.log(`Skipping duplicate TagMap: TagId=${tagId}, LocationId=${locationId}`);
-                    continue;
-                  }
-                } catch (error) {
-                  console.warn(`Error checking TagMap LocationId constraint:`, error.message);
-                }
-              }
-              
-              // Check TagId_NoteId constraint
-              if (noteId !== null) {
-                try {
-                  const noteCheck = targetDb.exec(`SELECT COUNT(*) FROM TagMap WHERE TagId = ? AND NoteId = ?`, [tagId, noteId]);
-                  if (noteCheck.length > 0 && noteCheck[0].values[0][0] > 0) {
-                    console.log(`Skipping duplicate TagMap: TagId=${tagId}, NoteId=${noteId}`);
-                    continue;
-                  }
-                } catch (error) {
-                  console.warn(`Error checking TagMap NoteId constraint:`, error.message);
-                }
-              }
-            }
-          }
-          
-          // Update foreign key references based on ID mappings
-          adjustedRow = updateForeignKeyReferences(adjustedRow, tableName, columnNames, targetDb, sourceDb.name);
-          
-          const placeholders = new Array(adjustedRow.length).fill('?').join(',');
-          
-          // Use INSERT OR IGNORE to skip duplicates gracefully
-          const insertStmt = `INSERT OR IGNORE INTO ${tableName} VALUES (${placeholders})`;
-          
-          try {
-            // For critical tables, perform pre-insert constraint validation
-            if (tableName === 'Location' && hasId) {
-              const insertedId = adjustedRow[idColumnIndex];
-              
-              // Double-check ID doesn't already exist (should be caught earlier but this is defensive)
-              const idCheckQuery = `SELECT COUNT(*) FROM Location WHERE LocationId = ?`;
-              const idCheckResult = targetDb.exec(idCheckQuery, [insertedId]);
-              
-              if (idCheckResult.length > 0 && idCheckResult[0].values[0][0] > 0) {
-                const locationDescription = getLocationDescription(adjustedRow, columnNames);
-                console.error(`🚨 Pre-insert ID conflict detected for Location ${insertedId}: ${locationDescription}`);
-                console.error(`   Finding next available ID to resolve conflict...`);
-                
-                // Find next truly available ID
-                let searchId = insertedId + 1;
-                let idAvailable = false;
-                while (!idAvailable && searchId < insertedId + 1000) { // Prevent infinite loop
-                  const searchQuery = `SELECT COUNT(*) FROM Location WHERE LocationId = ?`;
-                  const searchResult = targetDb.exec(searchQuery, [searchId]);
-                  if (searchResult.length === 0 || searchResult[0].values[0][0] === 0) {
-                    idAvailable = true;
-                  } else {
-                    searchId++;
-                  }
-                }
-                
-                if (idAvailable) {
-                  console.log(`   Using LocationId ${searchId} instead of ${insertedId}`);
-                  adjustedRow[idColumnIndex] = searchId;
-                  nextAvailableId = Math.max(nextAvailableId, searchId + 1);
-                  
-                  // Update pending mapping if it exists
-                  if (adjustedRow._pendingIdMapping) {
-                    adjustedRow._pendingIdMapping.newId = searchId;
-                  }
-                } else {
-                  console.error(`   Could not find available ID for Location: ${locationDescription}`);
-                  continue; // Skip this row as last resort
-                }
-              }
-              
-              // Check for composite unique constraint violations
-              const bookNumberIndex = columnNames.indexOf('BookNumber');
-              const chapterNumberIndex = columnNames.indexOf('ChapterNumber');
-              const keySymbolIndex = columnNames.indexOf('KeySymbol');
-              const mepsLanguageIndex = columnNames.indexOf('MepsLanguage');
-              const typeIndex = columnNames.indexOf('Type');
-              const issueTagNumberIndex = columnNames.indexOf('IssueTagNumber');
-              
-              if (bookNumberIndex !== -1 && keySymbolIndex !== -1) {
-                const bookNumber = adjustedRow[bookNumberIndex];
-                const chapterNumber = chapterNumberIndex !== -1 ? adjustedRow[chapterNumberIndex] : null;
-                const keySymbol = adjustedRow[keySymbolIndex];
-                const mepsLanguage = mepsLanguageIndex !== -1 ? adjustedRow[mepsLanguageIndex] : null;
-                const type = typeIndex !== -1 ? adjustedRow[typeIndex] : null;
-                const issueTagNumber = issueTagNumberIndex !== -1 ? adjustedRow[issueTagNumberIndex] : null;
-                
-                const compositeCheckQuery = `SELECT LocationId FROM Location WHERE ` +
-                  `BookNumber ${bookNumber === null ? 'IS NULL' : '= ?'} AND ` +
-                  `ChapterNumber ${chapterNumber === null ? 'IS NULL' : '= ?'} AND ` +
-                  `KeySymbol ${keySymbol === null ? 'IS NULL' : '= ?'} AND ` +
-                  `MepsLanguage ${mepsLanguage === null ? 'IS NULL' : '= ?'} AND ` +
-                  `Type ${type === null ? 'IS NULL' : '= ?'} AND ` +
-                  `IssueTagNumber ${issueTagNumber === null ? 'IS NULL' : '= ?'}`;
-                
-                const params = [];
-                if (bookNumber !== null) params.push(bookNumber);
-                if (chapterNumber !== null) params.push(chapterNumber);
-                if (keySymbol !== null) params.push(keySymbol);
-                if (mepsLanguage !== null) params.push(mepsLanguage);
-                if (type !== null) params.push(type);
-                if (issueTagNumber !== null) params.push(issueTagNumber);
-                
-                const compositeCheck = targetDb.exec(compositeCheckQuery, params);
-                if (compositeCheck.length > 0 && compositeCheck[0].values[0]) {
-                  const existingId = compositeCheck[0].values[0][0];
-                  const locationDescription = getLocationDescription(adjustedRow, columnNames);
-                  console.error(`🚨 Pre-insert composite constraint violation for Location ${insertedId}: ${locationDescription}`);
-                  console.error(`   Content already exists with LocationId ${existingId} - this should have been caught as duplicate!`);
-                  continue; // Skip this row
-                }
-              }
-            }
-            
-            targetDb.exec(insertStmt, adjustedRow);
-            
-            // Enhanced verification for critical tables and ID mappings
-            if (hasId) {
-              const insertedId = adjustedRow[idColumnIndex];
-              const idColumn = columnNames[idColumnIndex];
-              const verifyQuery = `SELECT COUNT(*) FROM ${tableName} WHERE ${idColumn} = ?`;
-              const verifyResult = targetDb.exec(verifyQuery, [insertedId]);
-              
-              const insertSucceeded = verifyResult.length > 0 && verifyResult[0].values[0][0] > 0;
-              
-              if (!insertSucceeded) {
-                // Insert failed silently - this is critical for ID mappings
-                if (tableName === 'Location') {
-                  const locationDescription = getLocationDescription(adjustedRow, columnNames);
-                  
-                  // Check if this is a debug location we're tracking
-                  const keySymbolIndex = columnNames.indexOf('KeySymbol');
-                  const issueTagNumberIndex = columnNames.indexOf('IssueTagNumber');
-                  const keySymbol = keySymbolIndex !== -1 ? adjustedRow[keySymbolIndex] : null;
-                  const issueTagNumber = issueTagNumberIndex !== -1 ? adjustedRow[issueTagNumberIndex] : null;
-                  const isDebugLocation = keySymbol === 'w' && (issueTagNumber === 20240200 || issueTagNumber === 20250500);
-                  
-                  console.error(`✗ CRITICAL: Location insert failed silently!`);
-                  console.error(`  ID: ${insertedId}, Content: ${locationDescription}`);
-                  console.error(`  This will cause foreign key mapping failures!`);
-                  
-                  if (isDebugLocation) {
-                    console.error(`  🚨 DEBUG: This is a tracked location - investigating why insert failed`);
-                    const bookNumberIndex = columnNames.indexOf('BookNumber');
-                    const chapterNumberIndex = columnNames.indexOf('ChapterNumber');
-                    const mepsLanguageIndex = columnNames.indexOf('MepsLanguage');
-                    const typeIndex = columnNames.indexOf('Type');
-                    
-                    console.error(`    Full row data: [${adjustedRow.map((val, idx) => `${columnNames[idx]}=${val}`).join(', ')}]`);
-                  }
-                } else if (tableName === 'UserMark') {
-                  // For UserMark, provide additional diagnostic information
-                  const userMarkGuidIndex = columnNames.indexOf('UserMarkGuid');
-                  const locationIdIndex = columnNames.indexOf('LocationId');
-                  const guid = userMarkGuidIndex >= 0 ? adjustedRow[userMarkGuidIndex] : 'Unknown';
-                  const locationId = locationIdIndex >= 0 ? adjustedRow[locationIdIndex] : 'Unknown';
-                  
-                  console.error(`✗ CRITICAL: UserMark insert failed silently for ID ${insertedId}`);
-                  console.error(`  GUID: ${guid}, LocationId: ${locationId}`);
-                  
-                  // Check if the LocationId exists to diagnose FK constraint issues
-                  try {
-                    const locationCheck = targetDb.exec('SELECT COUNT(*) FROM Location WHERE LocationId = ?', [locationId]);
-                    const locationExists = locationCheck.length > 0 && locationCheck[0].values[0][0] > 0;
-                    if (!locationExists) {
-                      console.error(`  ❌ CAUSE: Referenced LocationId ${locationId} does not exist (FK constraint violation)`);
-                    }
-                  } catch (error) {
-                    console.error(`  Error checking LocationId existence:`, error.message);
-                  }
-                } else {
-                  console.error(`✗ CRITICAL: ${tableName} insert failed silently for ID ${insertedId}`);
-                }
-                
-                // Don't create the pending ID mapping since insert failed
-                if (adjustedRow._pendingIdMapping) {
-                  console.error(`❌ Not creating ID mapping due to failed insert: ${adjustedRow._pendingIdMapping.originalId} → ${adjustedRow._pendingIdMapping.newId}`);
-                }
-              } else {
-                // Insert succeeded - create pending ID mapping if exists
-                if (adjustedRow._pendingIdMapping) {
-                  const { tableName: mappingTable, originalId, newId } = adjustedRow._pendingIdMapping;
-                  trackIdMapping(mappingTable, originalId, newId);
-                  console.log(`✅ ID mapping created after successful insert: ${originalId} → ${newId}`);
-                }
-                
-                if (tableName === 'Location') {
-                  // Log successful Location inserts for debugging
-                  const locationDescription = getLocationDescription(adjustedRow, columnNames);
-                  
-                  // Check if this is a debug location we're tracking
-                  const keySymbolIndex = columnNames.indexOf('KeySymbol');
-                  const issueTagNumberIndex = columnNames.indexOf('IssueTagNumber');
-                  const keySymbol = keySymbolIndex !== -1 ? adjustedRow[keySymbolIndex] : null;
-                  const issueTagNumber = issueTagNumberIndex !== -1 ? adjustedRow[issueTagNumberIndex] : null;
-                  const isDebugLocation = keySymbol === 'w' && (issueTagNumber === 20240200 || issueTagNumber === 20250500);
-                  
-                  if (isDebugLocation) {
-                    console.log(`✅ DEBUG: Location insert succeeded: ID ${insertedId}, Content: ${locationDescription}`);
-                    const mepsLanguageIndex = columnNames.indexOf('MepsLanguage');
-                    const typeIndex = columnNames.indexOf('Type');
-                    const mepsLanguage = mepsLanguageIndex !== -1 ? adjustedRow[mepsLanguageIndex] : null;
-                    const type = typeIndex !== -1 ? adjustedRow[typeIndex] : null;
-                    console.log(`    MepsLanguage=${mepsLanguage}, Type=${type}`);
-                  }
-                  console.log(`✓ Location insert succeeded: ID ${insertedId}, Content: ${locationDescription}`);
-                }
-              }
-            }
-          } catch (error) {
-            // Log individual row errors but continue processing
-            console.warn(`✗ Failed to insert row in ${tableName}:`, error.message);
-            if (tableName === 'Location' && hasId) {
-              const locationDescription = getLocationDescription(adjustedRow, columnNames);
-              console.warn(`  Failed Location: ${locationDescription}`);
-            }
-          }
-        }
-        
-        // Update ID offset for next database (only for simple ID tables)
-        if (hasId && !isGuidOrCompositeUniqueTable(tableName) && data[0].values.length > 0) {
-          const maxId = Math.max(...data[0].values.map(row => row[idColumnIndex]));
-          idOffset = Math.max(idOffset, maxId + 1);
-        }
-        
-      } catch (error) {
-        // Log error but continue with other databases
-        console.warn(`Error merging ${tableName} from ${sourceDb.name}:`, error);
       }
     }
+
+    // No two Location rows may share a unique-constraint signature.
+    const locations = targetDb.exec('SELECT * FROM Location');
+    if (locations.length && locations[0].values) {
+      const columnNames = getColumns(targetDb, 'Location').map(col => col.name);
+      const seen = new Set();
+      for (const row of locations[0].values) {
+        const signature = createLocationConstraintSignature(row, columnNames);
+        if (seen.has(signature)) results.duplicateLocations++;
+        seen.add(signature);
+      }
+      if (results.duplicateLocations) {
+        console.error(`${results.duplicateLocations} duplicate Location entries survived the merge`);
+      }
+    }
+
+    for (const tableName of ['Location', 'UserMark', 'Note', 'Bookmark', 'Tag', 'TagMap', 'InputField']) {
+      const count = scalar(targetDb, `SELECT COUNT(*) FROM ${quoteIdent(tableName)}`);
+      if (count !== undefined) results.counts[tableName] = count;
+    }
+
+    console.log('Merge statistics:', JSON.stringify(results));
   } catch (error) {
-    console.warn(`Error setting up merge for table ${tableName}:`, error);
+    console.error('Error during integrity validation:', error.message);
   }
+
+  return results;
 }
 
 // Handle messages from main thread
-self.onmessage = async function(e) {
+self.onmessage = async function (e) {
   const { type, files, mergeConfig } = e.data;
-  
-  if (type === 'merge') {
+
+  if (type !== 'merge') return;
+
+  try {
     await processMerge(files, mergeConfig);
+  } catch (error) {
+    // Nothing may escape this handler: an unhandled rejection posts no message
+    // and leaves the caller waiting on a promise that never settles.
+    postMessage({
+      type: 'error',
+      error: error && error.message ? error.message : 'Unknown error during merge processing',
+    });
   }
 };
